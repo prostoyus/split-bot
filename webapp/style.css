@@ -1,0 +1,517 @@
+/* Split Bot Mini App styles. Colors come from Telegram theme variables
+   (--tg-theme-*), with light/dark fallbacks for a normal browser. */
+
+:root {
+  --bg: var(--tg-theme-secondary-bg-color, #efeff4);
+  --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #ffffff));
+  --text: var(--tg-theme-text-color, #000000);
+  --hint: var(--tg-theme-hint-color, #8e8e93);
+  --link: var(--tg-theme-link-color, #2481cc);
+  --accent: var(--tg-theme-button-color, #2481cc);
+  --accent-text: var(--tg-theme-button-text-color, #ffffff);
+  --section-header: var(--tg-theme-section-header-text-color, var(--hint));
+  --subtitle: var(--tg-theme-subtitle-text-color, var(--hint));
+  --danger: var(--tg-theme-destructive-text-color, #e53935);
+  --separator: var(--tg-theme-section-separator-color, rgba(128, 128, 128, 0.22));
+  /* Balance colors: Telegram has no "positive" theme color, and its destructive
+     color is too light for small text on some clients, so use our own pair with
+     >= 4.5:1 contrast on both white cards and the grey page background. */
+  --plus: #157a33;
+  --minus: #c62828;
+  --wait: #9a6700;
+  --soft: rgba(128, 128, 128, 0.12);
+  --radius: 12px;
+
+  /* Safe areas. Telegram (8.0+) sets --tg-safe-area-inset-* (device notch /
+     home bar) and --tg-content-safe-area-inset-* (its own buttons in fullscreen);
+     both are 0 in the normal bottom-sheet mode. env() covers older clients. */
+  --inset-top: calc(var(--tg-safe-area-inset-top, env(safe-area-inset-top, 0px)) + var(--tg-content-safe-area-inset-top, 0px));
+  --inset-bottom: calc(var(--tg-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)) + var(--tg-content-safe-area-inset-bottom, 0px));
+  --inset-left: calc(var(--tg-safe-area-inset-left, env(safe-area-inset-left, 0px)) + var(--tg-content-safe-area-inset-left, 0px));
+  --inset-right: calc(var(--tg-safe-area-inset-right, env(safe-area-inset-right, 0px)) + var(--tg-content-safe-area-inset-right, 0px));
+  /* Stable height excludes the keyboard animation and Telegram's bottom bar. */
+  --vh: var(--tg-viewport-stable-height, 100vh);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--tg-theme-secondary-bg-color, #0f0f10);
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #1c1c1e));
+    --text: var(--tg-theme-text-color, #ffffff);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --link: var(--tg-theme-link-color, #64b5ef);
+    --accent: var(--tg-theme-button-color, #3e88f7);
+    --danger: var(--tg-theme-destructive-text-color, #ff5c5c);
+    --plus: #4cc764;
+    --minus: #ff6b6b;
+    --wait: #e3b341;
+  }
+}
+
+/* Inside Telegram the scheme comes from the app (data-theme, set in app.js),
+   which may differ from the system one; it wins over the media query. */
+:root[data-theme="dark"] { --plus: #4cc764; --minus: #ff6b6b; --wait: #e3b341; --soft: rgba(160, 160, 160, 0.14); color-scheme: dark; }
+:root[data-theme="light"] { --plus: #157a33; --minus: #c62828; --wait: #9a6700; --soft: rgba(128, 128, 128, 0.12); color-scheme: light; }
+
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  min-height: var(--vh);
+  padding: var(--inset-top) var(--inset-right) 0 var(--inset-left);
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+
+/* No double-tap zoom delay; no text selection / iOS link preview on long press. */
+a, button, label, summary, select, input { touch-action: manipulation; }
+button, label, summary, .row--link, .tabs { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+a { color: var(--link); }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+[hidden] { display: none !important; }
+
+/* ---------- layout */
+
+.app { max-width: 640px; margin: 0 auto; }
+
+.screen {
+  padding: 12px 12px calc(24px + var(--inset-bottom));
+  min-width: 0;
+}
+
+.screen--center {
+  min-height: calc(var(--vh) * 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page-header, .event-header { padding: 8px 4px 12px; }
+
+.page-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.page-sub { margin: 4px 0 0; color: var(--hint); font-size: 14px; }
+.event-header__meta .page-sub { margin: 0; }
+
+.event-header__meta {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.section-title {
+  margin: 18px 4px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--section-header);
+}
+
+.section-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.section-head .section-title { margin-bottom: 8px; }
+.section-head__buttons { display: flex; gap: 4px; margin: 0 0 4px; }
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.card--form { padding: 4px 16px; }
+
+.actions { display: grid; gap: 8px; margin-top: 16px; }
+.actions--top { margin: 0 0 4px; }
+
+.hint { margin: 10px 4px 0; color: var(--hint); font-size: 13px; }
+
+/* ---------- lists / rows */
+
+.list { list-style: none; margin: 0; padding: 0; }
+
+.list__item + .list__item { border-top: 1px solid var(--separator); }
+.list__item--mine { background: var(--soft); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 56px;
+  min-width: 0;
+}
+
+.row--link { color: inherit; text-decoration: none; }
+.row--link:active { background: var(--soft); }
+
+.row__main { flex: 1 1 auto; min-width: 0; }
+
+.row__title {
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.row__sub { margin-top: 2px; color: var(--hint); font-size: 13px; overflow-wrap: anywhere; }
+
+.row__side { flex: 0 0 auto; max-width: 50%; text-align: right; }
+
+.row__chevron {
+  flex: 0 0 auto;
+  width: 8px; height: 8px;
+  border-right: 2px solid var(--hint);
+  border-top: 2px solid var(--hint);
+  transform: rotate(45deg);
+  opacity: 0.7;
+}
+
+.row-actions { display: flex; gap: 8px; padding: 0 16px 12px 64px; flex-wrap: wrap; }
+
+.amount { font-weight: 600; white-space: nowrap; }
+
+.avatar {
+  flex: 0 0 auto;
+  width: 36px; height: 36px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: #8e8e93;
+}
+.avatar--c0 { background: #e17076; }
+.avatar--c1 { background: #faa774; }
+.avatar--c2 { background: #a695e7; }
+.avatar--c3 { background: #7bc862; }
+.avatar--c4 { background: #6ec9cb; }
+.avatar--c5 { background: #65aadd; }
+.avatar--c6 { background: #ee7aae; }
+
+/* ---------- balance badge */
+
+.net { display: inline-flex; flex-direction: column; align-items: flex-end; font-size: 13px; line-height: 1.25; }
+.net__label { font-weight: 500; }
+.net__amount { font-size: 15px; font-weight: 600; white-space: nowrap; }
+.net--plus { color: var(--plus); }
+.net--minus { color: var(--minus); }
+.net--zero { color: var(--hint); }
+.event-header__meta .net { flex-direction: row; align-items: baseline; gap: 6px; }
+
+.text-plus { color: var(--plus); font-weight: 600; }
+.text-minus { color: var(--minus); font-weight: 600; }
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 500;
+  vertical-align: 1px;
+  background: var(--soft);
+  color: var(--hint);
+  white-space: nowrap;
+}
+.row__side .badge { margin-left: 0; }
+.badge--me { color: var(--accent); }
+.badge--wait { color: var(--wait); background: rgba(240, 170, 0, 0.14); white-space: normal; text-align: center; }
+.badge--ok { color: var(--plus); }
+.badge--no { color: var(--minus); }
+
+/* ---------- transfers */
+
+.transfer { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; font-weight: 500; }
+.transfer__name { overflow-wrap: anywhere; }
+.transfer__arrow { color: var(--hint); }
+
+/* ---------- expenses */
+
+.expense__footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 16px 10px 64px;
+}
+
+.expense__details { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--hint); }
+.expense__details summary {
+  cursor: pointer;
+  min-height: 44px; /* tap target */
+  padding: 12px 0;
+  line-height: 20px;
+  list-style-position: inside;
+}
+.expense__details[open] summary { color: var(--text); }
+
+.shares { list-style: none; margin: 4px 0 0; padding: 0; }
+.shares__item { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+.shares__name { min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.shares__amount { white-space: nowrap; }
+
+/* ---------- tabs */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  /* Opaque (soft tint over the page color) instead of a blur filter: cheap to
+     paint while scrolling, and list content doesn't show through when stuck. */
+  background: linear-gradient(var(--soft), var(--soft)), var(--bg);
+  position: sticky;
+  top: var(--inset-top); /* below Telegram's buttons in fullscreen */
+  z-index: 5;
+}
+
+.tabs__tab {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 40px; /* + 3px bar padding each side = 46px touch row */
+  padding: 6px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--hint);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tabs__tab.is-active { background: var(--card); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+
+/* ---------- buttons */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+.btn:active { opacity: 0.7; }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+.btn--primary { background: var(--accent); color: var(--accent-text); }
+.btn--secondary { background: var(--card); color: var(--accent); }
+.card .btn--secondary, .row-actions .btn--secondary { background: var(--soft); }
+.btn--plain { background: transparent; color: var(--link); }
+.btn--link { min-height: 44px; padding: 4px 8px; background: transparent; color: var(--link); font-weight: 500; font-size: 14px; }
+.btn--danger-plain { background: transparent; color: var(--danger); font-weight: 500; }
+.btn--small { min-height: 44px; padding: 8px 14px; font-size: 14px; }
+.btn--block { width: 100%; }
+.expense__footer .btn--small { padding: 4px 8px; min-height: 44px; }
+
+/* ---------- forms */
+
+.field { padding: 12px 0; }
+.field + .field { border-top: 1px solid var(--separator); }
+
+.field__label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--hint); }
+
+.field__hint { margin: 6px 0 0; font-size: 13px; color: var(--hint); }
+
+.input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--separator);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 16px; /* prevents iOS zoom */
+  appearance: none;
+  -webkit-appearance: none;
+}
+.input:focus { outline: none; border-color: var(--accent); }
+.input::placeholder { color: var(--hint); opacity: 0.8; }
+
+select.input {
+  padding-right: 36px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--hint) 50%), linear-gradient(135deg, var(--hint) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+.input--amount { font-size: 24px; font-weight: 600; }
+
+.field-error {
+  margin: 12px 4px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: var(--minus);
+  background: rgba(229, 57, 53, 0.1);
+  font-size: 14px;
+}
+
+.checks { list-style: none; margin: 0; padding: 0; }
+.checks__item + .checks__item { border-top: 1px solid var(--separator); }
+
+.checks__label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  min-height: 52px;
+  cursor: pointer;
+}
+.checks__label:active { background: var(--soft); }
+
+.checks__box { position: absolute; opacity: 0; width: 22px; height: 22px; margin: 0; left: 16px; }
+
+.checks__mark {
+  flex: 0 0 auto;
+  width: 22px; height: 22px;
+  border: 2px solid var(--hint);
+  border-radius: 50%;
+  position: relative;
+}
+.checks__box:checked + .checks__mark { background: var(--accent); border-color: var(--accent); }
+.checks__box:checked + .checks__mark::after {
+  content: "";
+  position: absolute;
+  left: 6px; top: 2px;
+  width: 5px; height: 10px;
+  border: solid var(--accent-text);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.checks__box:focus-visible + .checks__mark { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.checks__name { min-width: 0; overflow-wrap: anywhere; }
+
+/* ---------- message / empty states */
+
+.message { max-width: 360px; padding: 24px 16px; text-align: center; }
+.message__icon {
+  width: 64px; height: 64px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  font-weight: 700;
+  background: var(--soft);
+  color: var(--accent);
+}
+.message__title { margin: 0 0 8px; font-size: 20px; }
+.message__text { margin: 0; color: var(--hint); }
+.message__actions { display: grid; gap: 8px; margin-top: 20px; }
+
+.empty { padding: 28px 20px; text-align: center; }
+.empty__title { margin: 0 0 6px; font-weight: 600; }
+.empty__text { margin: 0 0 4px; color: var(--hint); font-size: 14px; }
+.empty .btn { margin-top: 12px; }
+
+/* ---------- loading */
+
+.spinner {
+  width: 32px; height: 32px;
+  border: 3px solid var(--soft);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--soft) 25%, rgba(128, 128, 128, 0.22) 50%, var(--soft) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s ease-in-out infinite;
+}
+.skeleton--title { height: 26px; width: 60%; margin: 10px 4px 16px; }
+.skeleton--row { height: 44px; margin: 12px 16px; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .skeleton { animation: none; }
+}
+
+/* ---------- toast */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + var(--inset-bottom));
+  transform: translateX(-50%);
+  z-index: 50;
+  max-width: calc(100% - 32px);
+  width: max-content;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(30, 30, 30, 0.92);
+  color: #fff;
+  font-size: 14px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.toast--error { background: #c62828; }
+
+/* ---------- small screens */
+
+@media (max-width: 360px) {
+  .screen { padding-left: 8px; padding-right: 8px; }
+  .row { padding: 10px 12px; gap: 10px; }
+  .row-actions, .expense__footer { padding-left: 12px; padding-right: 12px; }
+  .card--form { padding: 4px 12px; }
+  .avatar { width: 32px; height: 32px; font-size: 13px; }
+  .tabs__tab { font-size: 13px; }
+}
