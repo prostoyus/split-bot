@@ -10,6 +10,7 @@ import html
 import secrets
 import string
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 __all__ = [
-    "CURRENCIES", "MAX_AMOUNT", "format_money",
+    "CURRENCIES", "MAX_AMOUNT", "SPLIT_EQUAL", "SPLIT_EXACT", "SPLIT_MODES", "format_money",
     "ServiceError", "BadRequestError", "ForbiddenError", "NotFoundError",
     "EventSummary", "EventDetail", "ShareView", "ExpenseView", "BalanceView", "TransferView",
     "EventBalances", "SettlementView", "UserEventDebts", "DebtReminder",
@@ -45,6 +46,9 @@ DESCRIPTION_MAX_LEN = 100
 INVITE_CODE_LEN = 10
 INVITE_CODE_ALPHABET = string.ascii_letters + string.digits + "-_"
 MAX_PARTICIPANTS = 200
+SPLIT_EQUAL = "equal"
+SPLIT_EXACT = "exact"
+SPLIT_MODES = (SPLIT_EQUAL, SPLIT_EXACT)
 
 
 # ---------------------------------------------------------------- errors
@@ -102,6 +106,7 @@ class ExpenseView:
     payer: User
     amount: int
     description: str
+    split: str  # "equal" | "exact"
     created_at: datetime
     created_by: int
     shares: list[ShareView]
@@ -418,10 +423,36 @@ def _expense_view(expense: Expense, users: dict[int, User]) -> ExpenseView:
         payer=users[expense.payer_id],
         amount=expense.amount,
         description=expense.description,
+        split=expense.split_mode,
         created_at=expense.created_at,
         created_by=expense.created_by,
         shares=[ShareView(user=users[s.user_id], amount=s.amount) for s in expense.shares],
     )
+
+
+def _exact_shares(
+    amount: int, shares: Mapping[int, int] | list[tuple[int, int]], currency: str
+) -> dict[int, int]:
+    """Validate client-given shares: non-empty, unique users, each > 0, sum == amount."""
+    pairs = list(shares.items()) if isinstance(shares, Mapping) else list(shares)
+    if not pairs:
+        raise BadRequestError("Укажите доли участников")
+    if len(pairs) > MAX_PARTICIPANTS:
+        raise BadRequestError("Слишком много участников")
+    result: dict[int, int] = {}
+    for user_id, share in pairs:
+        if user_id in result:
+            raise BadRequestError("Участники не должны повторяться")
+        if not isinstance(share, int) or isinstance(share, bool) or share <= 0:
+            raise BadRequestError("Доля каждого участника должна быть больше нуля")
+        result[user_id] = share
+    total = sum(result.values())
+    if total != amount:
+        raise BadRequestError(
+            f"Сумма долей ({format_money(total, currency)}) не совпадает "
+            f"с суммой траты ({format_money(amount, currency)})"
+        )
+    return dict(sorted(result.items()))
 
 
 async def add_expense(
@@ -431,41 +462,61 @@ async def add_expense(
     amount: int,
     description: str,
     payer_id: int,
-    participant_ids: list[int],
+    participant_ids: list[int] | None = None,
+    *,
+    split: str = SPLIT_EQUAL,
+    shares: Mapping[int, int] | list[tuple[int, int]] | None = None,
 ) -> ExpenseView:
-    """Add an expense split equally between participants. Commits and notifies."""
+    """Add an expense. Commits and notifies.
+
+    split="equal": split `amount` equally between `participant_ids` (`shares` must be None).
+    split="exact": `shares` = [(user_id, amount)] or {user_id: amount}, summing to `amount`
+    (`participant_ids` must be None).
+    """
     event = await require_member(session, event_id, actor_id)
     amount = _check_amount(amount)
     description = _clean_text(description, DESCRIPTION_MAX_LEN, "описание")
-    if not participant_ids:
-        raise BadRequestError("Выберите хотя бы одного участника")
-    if len(participant_ids) > MAX_PARTICIPANTS:
-        raise BadRequestError("Слишком много участников")
-    if len(set(participant_ids)) != len(participant_ids):
-        raise BadRequestError("Участники не должны повторяться")
+    if split == SPLIT_EQUAL:
+        if shares is not None:
+            raise BadRequestError("При равном делении доли не указываются")
+        if not participant_ids:
+            raise BadRequestError("Выберите хотя бы одного участника")
+        if len(participant_ids) > MAX_PARTICIPANTS:
+            raise BadRequestError("Слишком много участников")
+        if len(set(participant_ids)) != len(participant_ids):
+            raise BadRequestError("Участники не должны повторяться")
+        split_shares = split_equally(amount, participant_ids)
+    elif split == SPLIT_EXACT:
+        if participant_ids is not None:
+            raise BadRequestError("При точном делении укажите доли, а не список участников")
+        if shares is None:
+            raise BadRequestError("Укажите доли участников")
+        split_shares = _exact_shares(amount, shares, event.currency)
+    else:
+        raise BadRequestError("Неизвестный способ деления траты")
 
     members = set(await _member_ids(session, event_id))
     if payer_id not in members:
         raise BadRequestError("Плательщик должен быть участником события")
-    if not set(participant_ids) <= members:
+    if not set(split_shares) <= members:
         raise BadRequestError("Все участники траты должны быть участниками события")
 
-    shares = split_equally(amount, participant_ids)
     expense = Expense(
         event_id=event_id,
         payer_id=payer_id,
         amount=amount,
         description=description,
+        split_mode=split,
         created_by=actor_id,
-        shares=[ExpenseShare(user_id=uid, amount=share) for uid, share in shares.items()],
+        shares=[ExpenseShare(user_id=uid, amount=a) for uid, a in split_shares.items()],
     )
     session.add(expense)
     await session.commit()
 
-    users = await _users_by_ids(session, set(shares) | {payer_id, actor_id})
+    users = await _users_by_ids(session, set(split_shares) | {payer_id, actor_id})
     view = _expense_view(expense, users)
 
-    recipients = (set(shares) | {payer_id}) - {actor_id}
+    recipients = (set(split_shares) | {payer_id}) - {actor_id}
     head = (
         f"<b>{_name(users.get(actor_id))}</b> добавил(а) трату в «{html.escape(event.title)}»:\n"
         f"{html.escape(description)} — <b>{format_money(amount, event.currency)}</b>\n"
@@ -473,8 +524,8 @@ async def add_expense(
     )
     for uid in sorted(recipients):
         text = head
-        if uid in shares:
-            text += f"\nВаша доля: <b>{format_money(shares[uid], event.currency)}</b>"
+        if uid in split_shares:
+            text += f"\nВаша доля: <b>{format_money(split_shares[uid], event.currency)}</b>"
         await notify(uid, text, {"event_id": event_id})
     return view
 

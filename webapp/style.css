@@ -515,3 +515,57 @@ select.input {
   .avatar { width: 32px; height: 32px; font-size: 13px; }
   .tabs__tab { font-size: 13px; }
 }
+
+/* ---------- split modes (add expense) */
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.segmented__btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--hint);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.segmented__btn.is-active { background: var(--accent); color: var(--accent-text); }
+
+.share-list { list-style: none; margin: 0; padding: 0; }
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  min-height: 56px;
+}
+.share-row + .share-row { border-top: 1px solid var(--separator); }
+
+.share-row__name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; cursor: pointer; }
+
+.share-row__field { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.share-row__cur { color: var(--hint); font-size: 14px; min-width: 1em; }
+
+.input--share { width: 112px; min-height: 40px; padding: 8px 10px; text-align: right; }
+
+.split-summary { margin: 10px 4px 0; font-size: 14px; color: var(--hint); }
+.split-summary.is-ok { color: var(--plus); font-weight: 600; }
+.split-summary.is-over { color: var(--minus); font-weight: 600; }
+
+.badge--split { color: var(--accent); }
+
+@media (max-width: 360px) {
+  .share-row { padding: 8px 12px; gap: 8px; }
+  .input--share { width: 96px; }
+}

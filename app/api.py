@@ -7,7 +7,7 @@ import time
 from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Path, Request
 from fastapi.exceptions import RequestValidationError
@@ -61,11 +61,18 @@ class JoinIn(_In):
     invite_code: StrictStr = Field(max_length=64)
 
 
+class ShareIn(_In):
+    user_id: Id
+    amount: StrictInt = Field(ge=-MAX_ID, le=MAX_ID)  # > 0 checked in services (Russian 400)
+
+
 class ExpenseIn(_In):
     amount: StrictInt = Field(ge=-MAX_ID, le=MAX_ID)  # exact bounds checked in services
     description: StrictStr = Field(max_length=1000)
     payer_id: Id
-    participant_ids: list[Id] = Field(max_length=services.MAX_PARTICIPANTS)
+    split: Literal["equal", "exact"] | None = None  # None = "equal" (backward compatible)
+    participant_ids: list[Id] | None = Field(default=None, max_length=services.MAX_PARTICIPANTS)
+    shares: list[ShareIn] | None = Field(default=None, max_length=services.MAX_PARTICIPANTS)
 
 
 class SettlementIn(_In):
@@ -81,6 +88,8 @@ FIELD_ERRORS = {
     "description": "Некорректное описание",
     "payer_id": "Некорректный плательщик",
     "participant_ids": "Некорректный список участников",
+    "split": "Некорректный способ деления: допустимо «equal» или «exact»",
+    "shares": "Некорректный список долей",
     "to_id": "Некорректный получатель",
     "event_id": "Некорректный номер события",
     "expense_id": "Некорректный номер траты",
@@ -125,6 +134,7 @@ def expense_out(x: services.ExpenseView) -> dict:
         "payer": user_out(x.payer),
         "amount": x.amount,
         "description": x.description,
+        "split": x.split,
         "created_at": _dt(x.created_at),
         "created_by": x.created_by,
         "shares": [{"user": user_out(s.user), "amount": s.amount} for s in x.shares],
@@ -313,6 +323,8 @@ def create_app() -> FastAPI:
             description=body.description,
             payer_id=body.payer_id,
             participant_ids=body.participant_ids,
+            split=body.split or services.SPLIT_EQUAL,
+            shares=None if body.shares is None else [(x.user_id, x.amount) for x in body.shares],
         )
         return expense_out(view)
 

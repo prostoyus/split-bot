@@ -73,8 +73,10 @@ Money is stored as **integer minor units** (kopecks). Never floats.
 - `members`: `event_id`, `user_id`, `joined_at` (PK event_id+user_id)
 - `expenses`: `id`, `event_id`, `payer_id`, `amount` (>0, <= 100_000_000_00), `description` (1..100),
   `created_by`, `created_at`
-- `expense_shares`: `expense_id`, `user_id`, `amount` — equal split; remainder kopecks go one each to the
-  first participants by user id order, so shares always sum exactly to `amount`.
+- `expense_shares`: `expense_id`, `user_id`, `amount` — shares always sum exactly to `amount`.
+  - `split="equal"`: remainder kopecks go one each to the first participants by user id order.
+  - `split="exact"`: shares are given by the client (see API).
+- `expenses.split_mode`: `equal|exact` (default `equal`; added column, migrate existing DBs in `init_db`).
 - `settlements`: `id`, `event_id`, `from_id`, `to_id`, `amount`, `status` (`pending|confirmed|rejected`),
   `created_at`, `resolved_at`. At most one `pending` settlement per (event, from, to) — partial unique index.
 - `reminders`: `event_id`, `user_id`, `last_sent_at` (for reminder throttling)
@@ -108,8 +110,8 @@ User object everywhere: `{ "id": int, "name": str, "username": str|null }` (`nam
 | POST | `/api/events` | `{ title, currency? }` | event detail (creator becomes member) |
 | GET | `/api/events/{id}` | – | `{ id, title, currency, invite_code, invite_link, owner_id, members:[user], my_net }` — `invite_link` = `https://t.me/<bot_username>?start=join_<invite_code>` |
 | POST | `/api/join` | `{ invite_code }` | event detail (idempotent) |
-| GET | `/api/events/{id}/expenses` | – | `[{ id, payer:user, amount, description, created_at, created_by, shares:[{user, amount}] }]` newest first |
-| POST | `/api/events/{id}/expenses` | `{ amount, description, payer_id, participant_ids:[int] }` | expense. payer and all participants must be members; participants non-empty, unique |
+| GET | `/api/events/{id}/expenses` | – | `[{ id, payer:user, amount, description, split, created_at, created_by, shares:[{user, amount}] }]` newest first |
+| POST | `/api/events/{id}/expenses` | `{ amount, description, payer_id, split?: "equal"\|"exact", participant_ids?:[int], shares?:[{user_id, amount}] }` | expense. See "Split modes" below |
 | DELETE | `/api/expenses/{id}` | – | `{ "ok": true }` — only creator or payer |
 | GET | `/api/events/{id}/balances` | – | `{ balances:[{ user, net }], transfers:[{ from:user, to:user, amount }] }` |
 | GET | `/api/events/{id}/settlements` | – | `[{ id, from:user, to:user, amount, status, created_at }]` newest first |
@@ -120,6 +122,21 @@ User object everywhere: `{ "id": int, "name": str, "username": str|null }` (`nam
 Errors: `{ "detail": "<Russian human-readable message>" }` with proper status codes (400/401/403/404/422/429).
 Unexpected errors → 500 `{ "detail": "Внутренняя ошибка сервера" }`, produced inside the CORS layer so CORS headers are present.
 Amounts in API are integers in minor units.
+
+### Split modes (POST expenses)
+
+- `split` omitted or `"equal"`: `participant_ids` required (non-empty, unique, all members); equal split as before.
+  `shares` must be absent.
+- `split="exact"`: `shares` required: non-empty list of `{user_id, amount}`; user_ids unique and members;
+  every amount is an int > 0; sum of amounts must equal `amount` exactly, otherwise 400
+  "Сумма долей (X) не совпадает с суммой траты (Y)" (formatted money). `participant_ids` must be absent.
+- Payer is always a member; payer may or may not have a share.
+- Response `split` field echoes the stored mode.
+- "Absent" means missing or `null`; any other value of the wrong-mode field (even `[]`) → 400.
+  Errors (400 unless noted): "При равном делении доли не указываются", "При точном делении укажите доли,
+  а не список участников", "Укажите доли участников", "Доля каждого участника должна быть больше нуля",
+  "Участники не должны повторяться", "Все участники траты должны быть участниками события";
+  unknown `split` value or non-integer share → 422 with a Russian `detail`.
 
 ## Notifications (app/notifier.py)
 

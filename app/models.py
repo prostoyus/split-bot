@@ -65,6 +65,7 @@ class Expense(Base):
     payer_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
     amount: Mapped[int] = mapped_column(BigInteger)
     description: Mapped[str] = mapped_column(String(100))
+    split_mode: Mapped[str] = mapped_column(String(8), default="equal", server_default="equal")
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
 
@@ -75,7 +76,10 @@ class Expense(Base):
         order_by="ExpenseShare.user_id",
     )
 
-    __table_args__ = (CheckConstraint("amount > 0", name="ck_expense_amount_positive"),)
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_expense_amount_positive"),
+        CheckConstraint("split_mode IN ('equal', 'exact')", name="ck_expense_split_mode"),
+    )
 
 
 class ExpenseShare(Base):

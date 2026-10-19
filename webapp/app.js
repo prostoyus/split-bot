@@ -775,7 +775,8 @@
     var count = (x.shares || []).length;
 
     var details = el('details', { class: 'expense__details' },
-      el('summary', { text: count + ' ' + plural(count, 'участник', 'участника', 'участников') + (myShare !== null ? ' · ваша доля ' + formatMoney(myShare, ev.currency) : '') }),
+      el('summary', null, count + ' ' + plural(count, 'участник', 'участника', 'участников') + (myShare !== null ? ' · ваша доля ' + formatMoney(myShare, ev.currency) : ''),
+        x.split === 'exact' ? el('span', { class: 'badge badge--split', text: 'своя сумма' }) : null),
       el('ul', { class: 'shares', role: 'list' }, (x.shares || []).map(function (s) {
         return el('li', { class: 'shares__item' },
           el('span', { class: 'shares__name', text: who(s.user) }),
@@ -1007,19 +1008,21 @@
       // "Done" just hides the keyboard so payer / participants can be checked before saving.
       onkeydown: function (e) { if (e.key === 'Enter') { e.preventDefault(); hideKeyboard(); } }
     });
-    function updateDirty() { setDirty(amountInput.value.trim() !== '' || descInput.value.trim() !== ''); }
-    amountInput.addEventListener('input', updateDirty);
-    descInput.addEventListener('input', updateDirty);
+    amountInput.addEventListener('input', function () { updateDirty(); });
+    descInput.addEventListener('input', function () { updateDirty(); });
     var payerSelect = el('select', { class: 'input', id: 'f-payer' }, members.map(function (u) {
       return el('option', { value: String(u.id), text: isMe(u) ? userName(u) + ' (вы)' : userName(u), selected: isMe(u) });
     }));
     var preview = el('p', { class: 'field__hint', id: 'f-amount-hint', 'aria-live': 'polite' });
     var errorBox = el('p', { class: 'field-error', role: 'alert', hidden: 'hidden' });
 
+    var mode = 'equal'; // 'equal' | 'exact'; values of both modes are kept while switching
+
+    // --- equal mode: participants checkboxes
     var checkboxes = [];
     var participantList = el('ul', { class: 'checks', role: 'list' }, members.map(function (u) {
       var cb = el('input', { type: 'checkbox', class: 'checks__box', id: 'p-' + u.id, value: String(u.id), checked: true,
-        onchange: function () { hapticSelect(); updatePreview(); } });
+        onchange: function () { hapticSelect(); updatePreview(); updateDirty(); } });
       checkboxes.push(cb);
       return el('li', { class: 'checks__item' },
         el('label', { class: 'checks__label', for: 'p-' + u.id },
@@ -1031,11 +1034,143 @@
 
     function setAll(on) {
       checkboxes.forEach(function (cb) { cb.checked = on; });
+      hapticSelect();
       updatePreview();
+      updateDirty();
     }
 
     function selectedIds() {
       return checkboxes.filter(function (cb) { return cb.checked; }).map(function (cb) { return Number(cb.value); });
+    }
+
+    // --- exact mode: an amount per member (empty field = not participating)
+    var shareInputs = members.map(function (u) {
+      var name = isMe(u) ? userName(u) + ' (вы)' : userName(u);
+      var input = el('input', {
+        class: 'input input--share', id: 's-' + u.id, type: 'text', inputmode: 'decimal', autocomplete: 'off',
+        enterkeyhint: 'next', placeholder: '0', 'aria-label': 'Сумма для: ' + name,
+        oninput: function () { updateSplitSummary(); updateDirty(); },
+        onkeydown: function (e) {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          var idx = shareInputs.findIndex(function (x) { return x.input === input; });
+          if (idx + 1 < shareInputs.length) shareInputs[idx + 1].input.focus(); else hideKeyboard();
+        }
+      });
+      return { user: u, name: name, input: input };
+    });
+    var shareList = el('ul', { class: 'share-list', role: 'list' }, shareInputs.map(function (x) {
+      return el('li', { class: 'share-row' },
+        avatar(x.user),
+        el('label', { class: 'share-row__name', for: x.input.id, text: x.name }),
+        el('div', { class: 'share-row__field' }, x.input,
+          el('span', { class: 'share-row__cur', 'aria-hidden': 'true', text: symbol })));
+    }));
+    var splitSummary = el('p', { class: 'split-summary', 'aria-live': 'polite' });
+    var remainderBtn = el('button', { class: 'btn btn--link', type: 'button', text: 'Остаток поровну', onclick: function () { spreadRemainder(); } });
+
+    /** Parsed exact shares: { shares:[{user_id, amount}], invalid:[name], sum }. */
+    function readShares() {
+      var res = { shares: [], invalid: [], sum: 0 };
+      shareInputs.forEach(function (x) {
+        var raw = x.input.value.trim();
+        if (!raw) return;
+        var v = parseAmount(raw);
+        if (v === null || v > MAX_AMOUNT) { res.invalid.push(x.name); return; }
+        if (v > 0) { res.shares.push({ user_id: x.user.id, amount: v }); res.sum += v; }
+      });
+      return res;
+    }
+
+    /** Kopecks -> input text: 150050 -> "1500,50", 150000 -> "1500". */
+    function amountToInput(v) {
+      var minor = v % 100;
+      return String(Math.floor(v / 100)) + (minor ? ',' + (minor < 10 ? '0' : '') + minor : '');
+    }
+
+    function validTotal(total) {
+      return total !== null && total > 0 && total <= MAX_AMOUNT;
+    }
+
+    function updateSplitSummary() {
+      var total = parseAmount(amountInput.value);
+      var r = readShares();
+      var empty = shareInputs.filter(function (x) { return !x.input.value.trim(); }).length;
+      if (!errorBox.hidden) fieldError(errorBox, null); // stale submit error no longer matches the inputs
+      remainderBtn.disabled = !empty || !validTotal(total) || r.invalid.length > 0 || r.sum >= total;
+      splitSummary.className = 'split-summary';
+      if (r.invalid.length) {
+        splitSummary.className += ' is-over';
+        splitSummary.textContent = 'Проверьте сумму: ' + r.invalid.join(', ');
+        return;
+      }
+      if (!validTotal(total)) {
+        splitSummary.textContent = 'Распределено ' + formatMoney(r.sum, ev.currency) + ' · сначала укажите сумму траты';
+        return;
+      }
+      var main = 'Распределено ' + formatMoney(r.sum, ev.currency) + ' из ' + formatMoney(total, ev.currency) + ' · ';
+      if (r.sum === total) {
+        splitSummary.className += ' is-ok';
+        splitSummary.textContent = main + '✓ всё распределено';
+      } else if (r.sum > total) {
+        splitSummary.className += ' is-over';
+        splitSummary.textContent = main + 'лишние ' + formatMoney(r.sum - total, ev.currency);
+      } else {
+        splitSummary.textContent = main + 'осталось ' + formatMoney(total - r.sum, ev.currency);
+      }
+    }
+
+    /** Spread the unallocated rest equally over empty fields (kopeck-exact, extra kopecks to the first ones). */
+    function spreadRemainder() {
+      var total = parseAmount(amountInput.value);
+      var r = readShares();
+      var empty = shareInputs.filter(function (x) { return !x.input.value.trim(); });
+      if (!validTotal(total) || !empty.length || r.invalid.length || r.sum >= total) return;
+      var rest = total - r.sum;
+      var base = Math.floor(rest / empty.length);
+      var extra = rest % empty.length;
+      empty.forEach(function (x, i) {
+        var v = base + (i < extra ? 1 : 0);
+        x.input.value = v > 0 ? amountToInput(v) : '';
+      });
+      hapticSelect();
+      updateSplitSummary();
+      updateDirty();
+    }
+
+    // --- mode switch (segmented control)
+    var equalBox, exactBox;
+    var segButtons = [['equal', 'Поровну'], ['exact', 'Указать суммы']].map(function (m) {
+      var on = m[0] === mode;
+      return el('button', {
+        class: 'segmented__btn' + (on ? ' is-active' : ''), type: 'button', role: 'radio',
+        'aria-checked': on ? 'true' : 'false', tabindex: on ? '0' : '-1', 'data-mode': m[0], text: m[1],
+        onclick: function () { setMode(m[0]); },
+        onkeydown: function (e) {
+          if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+          e.preventDefault();
+          setMode(mode === 'equal' ? 'exact' : 'equal');
+          segButtons.filter(function (b) { return b.getAttribute('data-mode') === mode; })[0].focus();
+        }
+      });
+    });
+    var segmented = el('div', { class: 'segmented', role: 'radiogroup', 'aria-labelledby': 'f-mode-label' }, segButtons);
+
+    function setMode(next) {
+      if (next === mode) return;
+      mode = next;
+      hapticSelect();
+      segButtons.forEach(function (b) {
+        var on = b.getAttribute('data-mode') === mode;
+        b.className = 'segmented__btn' + (on ? ' is-active' : '');
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+        b.setAttribute('tabindex', on ? '0' : '-1');
+      });
+      equalBox.hidden = mode !== 'equal';
+      exactBox.hidden = mode !== 'exact';
+      fieldError(errorBox, null);
+      updatePreview();
+      updateSplitSummary();
     }
 
     function updatePreview() {
@@ -1044,33 +1179,58 @@
       if (!amountInput.value.trim()) preview.textContent = 'В ' + symbol + ', можно с копейками: 1500 или 1500,50';
       else if (amount === null || amount <= 0) preview.textContent = 'Введите сумму числом, например 1500,50';
       else if (amount > MAX_AMOUNT) preview.textContent = 'Слишком большая сумма';
+      else if (mode === 'exact') preview.textContent = 'Ниже укажите, сколько приходится на каждого';
       else if (!n) preview.textContent = 'Выберите, на кого делить';
       else preview.textContent = n === 1 ? 'Вся сумма на одного человека' : 'Примерно по ' + formatMoney(Math.floor(amount / n), ev.currency) + ' на человека';
     }
-    amountInput.addEventListener('input', updatePreview);
+
+    /** Unsaved input in any field of either mode -> ask before closing / leaving. */
+    function updateDirty() {
+      setDirty(amountInput.value.trim() !== '' || descInput.value.trim() !== '' ||
+        checkboxes.some(function (cb) { return !cb.checked; }) ||
+        shareInputs.some(function (x) { return x.input.value.trim() !== ''; }));
+    }
+    amountInput.addEventListener('input', function () { updatePreview(); updateSplitSummary(); });
     updatePreview();
+    updateSplitSummary();
+
+    function showError(message, focusNode) {
+      fieldError(errorBox, message);
+      if (focusNode) { focusNode.focus(); return; }
+      hideKeyboard();
+      try { errorBox.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { errorBox.scrollIntoView(false); }
+    }
 
     function submit() {
       if (state.busy) return;
       var amount = parseAmount(amountInput.value);
       var desc = descInput.value.trim();
-      var ids = selectedIds();
-      if (amount === null || amount <= 0) { fieldError(errorBox, 'Введите сумму больше нуля, например 1500 или 1500,50'); amountInput.focus(); return; }
-      if (amount > MAX_AMOUNT) { fieldError(errorBox, 'Сумма слишком большая'); amountInput.focus(); return; }
-      if (!desc) { fieldError(errorBox, 'Напишите, за что платили'); descInput.focus(); return; }
-      if (!ids.length) {
-        fieldError(errorBox, 'Выберите хотя бы одного участника');
-        hideKeyboard();
-        try { errorBox.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { errorBox.scrollIntoView(false); }
-        return;
+      if (amount === null || amount <= 0) { showError('Введите сумму больше нуля, например 1500 или 1500,50', amountInput); return; }
+      if (amount > MAX_AMOUNT) { showError('Сумма слишком большая', amountInput); return; }
+      if (!desc) { showError('Напишите, за что платили', descInput); return; }
+      var body = { amount: amount, description: desc, payer_id: Number(payerSelect.value) };
+      if (mode === 'exact') {
+        var r = readShares();
+        if (r.invalid.length) { showError('Проверьте сумму: ' + r.invalid.join(', ') + '. Пример: 500 или 500,50'); return; }
+        if (!r.shares.length) { showError('Укажите сумму хотя бы для одного участника'); return; }
+        if (r.sum !== amount) {
+          showError('Распределено ' + formatMoney(r.sum, ev.currency) + ' из ' + formatMoney(amount, ev.currency) + ' — ' +
+            (r.sum < amount ? 'осталось ' + formatMoney(amount - r.sum, ev.currency) : 'лишние ' + formatMoney(r.sum - amount, ev.currency)) +
+            '. Суммы участников должны в точности совпадать с суммой траты.');
+          return;
+        }
+        body.split = 'exact';
+        body.shares = r.shares;
+      } else {
+        var ids = selectedIds();
+        if (!ids.length) { showError('Выберите хотя бы одного участника'); return; }
+        body.split = 'equal';
+        body.participant_ids = ids;
       }
       fieldError(errorBox, null);
       hideKeyboard();
       setBusy(true);
-      request('/api/events/' + ev.id + '/expenses', {
-        method: 'POST',
-        body: { amount: amount, description: desc, payer_id: Number(payerSelect.value), participant_ids: ids }
-      }).then(function () {
+      request('/api/events/' + ev.id + '/expenses', { method: 'POST', body: body }).then(function () {
         haptic('success');
         toast('Трата добавлена');
         // Stay busy until the next screen renders, so a second tap can't add a duplicate.
@@ -1088,6 +1248,21 @@
       });
     }
 
+    equalBox = el('div', { class: 'split-box' },
+      el('div', { class: 'section-head' },
+        el('h2', { class: 'section-title', text: 'На кого делим' }),
+        el('div', { class: 'section-head__buttons' },
+          el('button', { class: 'btn btn--link', type: 'button', text: 'Выбрать всех', onclick: function () { setAll(true); } }),
+          el('button', { class: 'btn btn--link', type: 'button', text: 'Никого', onclick: function () { setAll(false); } }))),
+      el('div', { class: 'card' }, participantList));
+    exactBox = el('div', { class: 'split-box', hidden: 'hidden' },
+      el('div', { class: 'section-head' },
+        el('h2', { class: 'section-title', text: 'Кто сколько должен' }),
+        el('div', { class: 'section-head__buttons' }, remainderBtn)),
+      el('div', { class: 'card' }, shareList),
+      splitSummary,
+      el('p', { class: 'hint', text: 'Пустое поле — человек не участвует в этой трате.' }));
+
     var form = el('form', { class: 'screen', novalidate: 'novalidate', onsubmit: function (e) { e.preventDefault(); submit(); } },
       el('header', { class: 'page-header' },
         el('h1', { class: 'page-title', text: 'Новая трата' }),
@@ -1097,15 +1272,14 @@
           el('label', { class: 'field__label', for: 'f-amount', text: 'Сумма, ' + symbol }),
           amountInput,
           preview),
+        el('div', { class: 'field' },
+          el('span', { class: 'field__label', id: 'f-mode-label', text: 'Как делим' }),
+          segmented),
         field('За что', descInput),
         field('Кто платил', payerSelect)),
       errorBox, // right under the fields, so it is visible when one of them gets focus
-      el('div', { class: 'section-head' },
-        el('h2', { class: 'section-title', text: 'На кого делим' }),
-        el('div', { class: 'section-head__buttons' },
-          el('button', { class: 'btn btn--link', type: 'button', text: 'Выбрать всех', onclick: function () { setAll(true); } }),
-          el('button', { class: 'btn btn--link', type: 'button', text: 'Никого', onclick: function () { setAll(false); } }))),
-      el('div', { class: 'card' }, participantList),
+      equalBox,
+      exactBox,
       submitFallback('Сохранить'));
     mount(form);
     setMainButton('Сохранить', submit);
