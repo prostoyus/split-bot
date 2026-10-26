@@ -144,6 +144,7 @@ User object everywhere: `{ "id": int, "name": str, "username": str|null }` (`nam
 | GET | `/api/events` | – | `[{ id, title, currency, members_count, my_net }]` newest first |
 | POST | `/api/events` | `{ title, currency? }` | event detail (creator becomes member) |
 | GET | `/api/events/{id}` | – | `{ id, title, currency, invite_code, invite_link, owner_id, members:[user], my_net }` — `invite_link` = `https://t.me/<bot_username>?start=join_<invite_code>` |
+| PATCH | `/api/events/{id}` | `{ title }` | event detail. Only the owner (403 "Переименовать событие может только его создатель"); title trimmed, 1..64 chars (same validation/messages as create); same title → 200 without notification |
 | POST | `/api/join` | `{ invite_code }` | event detail (idempotent) |
 | GET | `/api/events/{id}/expenses` | – | `[{ id, payer:user, amount, description, split, created_at, created_by, shares:[{user, amount}] }]` newest first |
 | POST | `/api/events/{id}/expenses` | `{ amount, description, payer_id, split?: "equal"\|"exact", participant_ids?:[int], shares?:[{user_id, amount}] }` | expense. See "Split modes" below |
@@ -192,6 +193,7 @@ then event id, user id, so persistently failing rows cannot starve others), `mar
 ## Notifications (to everyone except the actor), with an "Открыть событие" web_app button
 
 - someone joined the event → other members
+- event renamed → other members ("Вася переименовал(а) событие «Старое» в «Новое»")
 - expense added → participants and payer (amount, description, their own share)
 - settlement created → recipient ("Вася отметил, что вернул вам 1 500 ₽ — подтвердите")
 - settlement confirmed/rejected → sender
@@ -212,6 +214,17 @@ then event id, user id, so persistently failing rows cannot starve others), `mar
 - Reminders (cron hourly): for each debtor (net<0) in each event with no reminder in `REMIND_EVERY_DAYS` days and no
   pending settlement there, send "Напоминание: вы должны X в «…»" + button, then `markReminded`. Process at most a
   safe batch per run (stay under the subrequest limit); the rest go next hour. Unreachable users are marked too.
+
+## Totals across events ("Итого")
+
+Computed from per-event `my_net` (Mini App: from `GET /api/events`; bot: from `getUserDebtsSummary`), grouped by
+currency, never converted. Per currency: owe = sum of |net| for net<0, owed = sum of net for net>0, total = owed − owe.
+- Mini App, "Мои события": card "Итого по всем событиям" above the list (hidden when there are no events):
+  "Вы должны: X" (red), "Вам должны: Y" (green), "В итоге: вам должны Z" / "В итоге: вы должны Z" / "Всё ровно".
+  Several currencies → one value per currency joined with " и " (or one row per currency if it reads better).
+  Zero parts may be omitted.
+- Bot `/debts`: an "<b>Итого</b>" block at the top with the same three lines per currency, then the per-event details.
+  If everything is zero → existing "Долгов нет 🎉".
 
 ## Mini App (webapp/)
 

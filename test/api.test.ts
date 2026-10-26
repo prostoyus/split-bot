@@ -75,6 +75,70 @@ describe("auth and basics", () => {
   });
 });
 
+describe("rename event", () => {
+  it("PATCH /api/events/{id}", async () => {
+    const { call, sent } = apiClient();
+    const created = await call("POST", "/api/events", ALICE, { title: "Старое" });
+    const eid = created.json.id;
+    await call("POST", "/api/join", BOB, { invite_code: created.json.invite_code });
+    sent.length = 0;
+
+    let r = await call("PATCH", `/api/events/${eid}`, ALICE, { title: " Новое " });
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ ...created.json, title: "Новое", members: r.json.members });
+    expect(Object.keys(r.json).sort()).toEqual(
+      ["currency", "id", "invite_code", "invite_link", "members", "my_net", "owner_id", "title"].sort(),
+    );
+    expect(r.json.members.map((m: any) => m.id)).toEqual([A, B]);
+    expect(sent).toEqual([
+      {
+        userId: B,
+        html: "<b>Алиса Иванова</b> переименовал(а) событие «Старое» в «Новое»",
+        extra: { eventId: eid },
+      },
+    ]);
+
+    sent.length = 0;
+    r = await call("PATCH", `/api/events/${eid}`, ALICE, { title: "Новое" });
+    expect([r.status, r.json.title, sent.length]).toEqual([200, "Новое", 0]);
+
+    r = await call("PATCH", `/api/events/${eid}`, BOB, { title: "Моё" });
+    expect([r.status, r.json.detail]).toEqual([403, "Переименовать событие может только его создатель"]);
+    r = await call("PATCH", `/api/events/${eid}`, MALLORY, { title: "Моё" });
+    expect([r.status, r.json.detail]).toEqual([403, "Вы не участник этого события"]);
+    r = await call("PATCH", "/api/events/999999", ALICE, { title: "Моё" });
+    expect([r.status, r.json.detail]).toEqual([404, "Событие не найдено"]);
+    r = await call("PATCH", "/api/events/abc", ALICE, { title: "Моё" });
+    expect(r.status).toBe(422);
+    r = await call("PATCH", `/api/events/${eid}`, ALICE, { title: "  " });
+    expect([r.status, r.json.detail]).toEqual([400, "Поле «название» не может быть пустым"]);
+    r = await call("PATCH", `/api/events/${eid}`, ALICE, { title: "x".repeat(65) });
+    expect(r.status).toBe(400);
+    r = await call("PATCH", `/api/events/${eid}`, ALICE, { title: "x".repeat(501) });
+    expect([r.status, r.json.detail]).toEqual([422, "Некорректное название события"]);
+    r = await call("PATCH", `/api/events/${eid}`, ALICE, { title: 5 });
+    expect([r.status, r.json.detail]).toEqual([422, "Некорректное название события"]);
+    r = await call("PATCH", `/api/events/${eid}`, ALICE, {});
+    expect(r.status).toBe(422);
+    r = await call("PATCH", `/api/events/${eid}`);
+    expect(r.status).toBe(401);
+    expect(sent).toEqual([]);
+    expect((await call("GET", `/api/events/${eid}`, BOB)).json.title).toBe("Новое");
+  });
+
+  it("preflight from an allowed origin lists PATCH", async () => {
+    const { call } = apiClient();
+    const r = await call("OPTIONS", "/api/events/1", undefined, undefined, {
+      Origin: ORIGIN,
+      "Access-Control-Request-Method": "PATCH",
+      "Access-Control-Request-Headers": "X-Telegram-Init-Data, Content-Type",
+    });
+    expect(r.status).toBe(204);
+    expect(r.headers.get("access-control-allow-origin")).toBe(ORIGIN);
+    expect(r.headers.get("access-control-allow-methods")?.split(/,\s*/)).toContain("PATCH");
+  });
+});
+
 describe("body size limit", () => {
   const post = async (body: BodyInit, extraHeaders: Record<string, string> = {}) => {
     const app = createApi();

@@ -129,6 +129,7 @@ describe("bot handlers via webhook", () => {
     const tg = mockTelegram();
     await postUpdate(messageUpdate({ id: B, first_name: "<Боб>" }, "/debts"));
     const text: string = tg.sent()[0]!.payload.text;
+    expect(text.startsWith("<b>Итого</b>\nВы должны: 1 500,50 ₽\nВ итоге: вы должны 1 500,50 ₽\n\n")).toBe(true);
     expect(text).toContain("<b>Ваши долги</b>");
     expect(text).toContain("<b>«Поездка»</b>");
     expect(text).toContain("Вы должны: Алиса Иванова — 1 500,50 ₽");

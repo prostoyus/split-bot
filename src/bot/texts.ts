@@ -1,5 +1,6 @@
 /** User-facing bot texts (Russian, ported from v1 bot/handlers.py) and pure text helpers. */
 
+import { CURRENCIES } from "../core/money";
 import { escapeHtml } from "../core/notify";
 import { formatMoney, type DebtReminder, type UserEventDebts } from "../core/services";
 
@@ -63,10 +64,47 @@ export function parseJoinPayload(args: string | null | undefined): string | null
   return a.startsWith(JOIN_PREFIX) ? a : null;
 }
 
-/** Human readable (HTML) summary of the user's debts across events. */
+/**
+ * "Итого" block (SPEC "Totals across events"): per currency, never converted.
+ * owe = sum of |net| for net < 0, owed = sum of net for net > 0, total = owed - owe.
+ * Zero owe/owed lines are omitted; currencies are labelled only when there are several.
+ * Returns null when every net is zero.
+ */
+export function formatTotals(items: readonly Pick<UserEventDebts, "currency" | "net">[]): string | null {
+  const totals = new Map<string, { owe: number; owed: number }>();
+  for (const item of items) {
+    if (!item.net) continue;
+    let t = totals.get(item.currency);
+    if (!t) totals.set(item.currency, (t = { owe: 0, owed: 0 }));
+    if (item.net < 0) t.owe += -item.net;
+    else t.owed += item.net;
+  }
+  if (totals.size === 0) return null;
+  const lines = ["<b>Итого</b>"];
+  const labelled = totals.size > 1;
+  // Same currency order as the Mini App totals card: the CURRENCIES list, unknown codes last.
+  const rank = (c: string) => {
+    const i = (CURRENCIES as readonly string[]).indexOf(c);
+    return i === -1 ? CURRENCIES.length : i;
+  };
+  const ordered = [...totals].sort(([a], [b]) => rank(a) - rank(b) || (a < b ? -1 : 1));
+  for (const [currency, { owe, owed }] of ordered) {
+    if (labelled) lines.push(`<i>${escapeHtml(currency)}</i>`);
+    if (owe > 0) lines.push(`Вы должны: ${formatMoney(owe, currency)}`);
+    if (owed > 0) lines.push(`Вам должны: ${formatMoney(owed, currency)}`);
+    const total = owed - owe;
+    if (total > 0) lines.push(`В итоге: вам должны ${formatMoney(total, currency)}`);
+    else if (total < 0) lines.push(`В итоге: вы должны ${formatMoney(-total, currency)}`);
+    else lines.push("Всё ровно");
+  }
+  return lines.join("\n");
+}
+
+/** Human readable (HTML) summary of the user's debts across events: totals first, then per event. */
 export function formatDebtsSummary(items: readonly UserEventDebts[]): string {
-  if (items.length === 0) return NO_DEBTS_TEXT;
-  const blocks = ["<b>Ваши долги</b>"];
+  const totals = formatTotals(items);
+  if (totals === null) return NO_DEBTS_TEXT;
+  const blocks = [totals, "<b>Ваши долги</b>"];
   for (const item of items) {
     const lines = [`<b>«${escapeHtml(item.title)}»</b>`];
     for (const t of item.owes) {

@@ -357,6 +357,47 @@ export async function getEventDetail(deps: Deps, eventId: number, userId: number
   return { event, members, myNet: nets.get(userId) ?? 0 };
 }
 
+/**
+ * Rename an event (owner only). 404 unknown, 403 non-member / non-owner, 400 bad title.
+ * Same title → detail without notification. Otherwise notifies the other members.
+ */
+export async function renameEvent(
+  deps: Deps,
+  eventId: number,
+  actorId: number,
+  title: string,
+): Promise<EventDetail> {
+  const { event, results } = await memberBatch(deps, eventId, actorId, [
+    membersStmt(deps, eventId),
+    netsStmt(deps, eventId),
+  ]);
+  if (event.ownerId !== actorId) {
+    throw new ForbiddenError("Переименовать событие может только его создатель");
+  }
+  const newTitle = cleanText(title, TITLE_MAX_LEN, "название");
+  const members = rows<UserRow>(results[0]).map(toUserRef);
+  const myNet = netsFromRows(rows(results[1])).get(actorId) ?? 0;
+  if (newTitle === event.title) return { event, members, myNet };
+
+  // Conditional on the owner: never renames someone else's event even under races.
+  const updated = await deps.db
+    .prepare(
+      `UPDATE events SET title = ?3 WHERE id = ?1 AND owner_id = ?2
+       RETURNING id, title, currency, invite_code, owner_id, created_at`,
+    )
+    .bind(eventId, actorId, newTitle)
+    .first<EventRow>();
+  if (!updated) throw new ForbiddenError("Переименовать событие может только его создатель");
+
+  const actor = members.find((m) => m.id === actorId);
+  const text =
+    `${bold(actor)} переименовал(а) событие «${escapeHtml(event.title)}» в «${escapeHtml(newTitle)}»`;
+  for (const m of members) {
+    if (m.id !== actorId) safeNotify(deps.notify, m.id, text, { eventId });
+  }
+  return { event: toEvent(updated), members, myNet };
+}
+
 /** Accepts "CODE" or "join_CODE" (deep-link payload). */
 export function parseInviteCode(codeOrJoinPayload: string): string | null {
   let code = (codeOrJoinPayload ?? "").trim();

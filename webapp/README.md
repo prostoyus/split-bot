@@ -8,7 +8,8 @@ Static files served by GitHub Pages: `index.html`, `config.js`, `app.js`, `style
 - Local dev only: `?api=` is accepted if it matches `^http://(localhost|127\.0\.0\.1)(:\d+)?$`;
   any other `api` value (e.g. old trycloudflare links) → "Неверная ссылка" (no fallback to config).
 - Routes (hash, so the query string stays intact): `#/` events, `#/new` create,
-  `#/e/<id>` expenses, `#/e/<id>/balances`, `#/e/<id>/members`, `#/e/<id>/add`.
+  `#/e/<id>` expenses, `#/e/<id>/balances`, `#/e/<id>/members`, `#/e/<id>/add`, `#/e/<id>/rename` (owner only).
+- "Мои события" shows an "Итого по всем событиям" card computed from `my_net` per currency (no conversion).
 - All user text is inserted via `textContent` (helper `el()` in `app.js`); never use `innerHTML`.
 - Outside Telegram (empty `initData`) the page only shows "Откройте через Telegram-бота".
 

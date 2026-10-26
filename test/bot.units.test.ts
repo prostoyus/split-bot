@@ -8,6 +8,7 @@ import { createTelegramSender, describeError } from "../src/bot/notifier";
 import {
   NO_DEBTS_TEXT,
   formatDebtsSummary,
+  formatTotals,
   joinedText,
   parseJoinPayload,
   reminderText,
@@ -88,6 +89,67 @@ describe("texts", () => {
     expect(reminderText({ eventTitle: "A&B", currency: "RUB", amount: 50000 })).toBe(
       "Напоминание: вы должны 500 ₽ в «A&amp;B»",
     );
+  });
+});
+
+describe("totals (Итого)", () => {
+  const bob = { id: 2, name: "Боб", username: null };
+  const item = (eventId: number, currency: string, net: number) => ({
+    eventId,
+    title: `E${eventId}`,
+    currency,
+    net,
+    owes: net < 0 ? [{ toUser: bob, amount: -net }] : [],
+    owedBy: net > 0 ? [{ fromUser: bob, amount: net }] : [],
+  });
+
+  it("single currency, mixed", () => {
+    expect(formatTotals([item(1, "RUB", -150050), item(2, "RUB", 50000), item(3, "RUB", -10000)])).toBe(
+      "<b>Итого</b>\nВы должны: 1 600,50 ₽\nВам должны: 500 ₽\nВ итоге: вы должны 1 100,50 ₽",
+    );
+    expect(formatTotals([item(1, "RUB", -5000), item(2, "RUB", 5000)])).toBe(
+      "<b>Итого</b>\nВы должны: 50 ₽\nВам должны: 50 ₽\nВсё ровно",
+    );
+  });
+
+  it("several currencies are never converted and are labelled", () => {
+    expect(formatTotals([item(1, "RUB", -10000), item(2, "USD", 2500), item(3, "RUB", 30000)])).toBe(
+      [
+        "<b>Итого</b>",
+        "<i>RUB</i>",
+        "Вы должны: 100 ₽",
+        "Вам должны: 300 ₽",
+        "В итоге: вам должны 200 ₽",
+        "<i>USD</i>",
+        "Вам должны: 25 $",
+        "В итоге: вам должны 25 $",
+      ].join("\n"),
+    );
+  });
+
+  it("owe-only and owed-only omit the zero line", () => {
+    expect(formatTotals([item(1, "RUB", -10000)])).toBe("<b>Итого</b>\nВы должны: 100 ₽\nВ итоге: вы должны 100 ₽");
+    expect(formatTotals([item(1, "RUB", 10000)])).toBe("<b>Итого</b>\nВам должны: 100 ₽\nВ итоге: вам должны 100 ₽");
+  });
+
+  it("all zero → no totals, «Долгов нет 🎉»", () => {
+    expect(formatTotals([])).toBeNull();
+    expect(formatTotals([item(1, "RUB", 0)])).toBeNull();
+    expect(formatDebtsSummary([])).toBe(NO_DEBTS_TEXT);
+    expect(formatDebtsSummary([item(1, "RUB", 0)])).toBe(NO_DEBTS_TEXT);
+  });
+
+  it("totals come first, then the per-event details; long lists still split", () => {
+    const text = formatDebtsSummary([item(1, "RUB", -10000), item(2, "RUB", 2500)]);
+    expect(text.startsWith("<b>Итого</b>\nВы должны: 100 ₽")).toBe(true);
+    expect(text.indexOf("<b>Итого</b>")).toBeLessThan(text.indexOf("<b>Ваши долги</b>"));
+    expect(text).toContain("<b>«E1»</b>\nВы должны: Боб — 100 ₽");
+    const many = Array.from({ length: 300 }, (_, i) => item(i + 1, i % 2 ? "RUB" : "USD", (i % 7) - 3 || 1));
+    const chunks = splitMessage(formatDebtsSummary(many));
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((c) => c.length <= 4096)).toBe(true);
+    // Currencies follow the fixed CURRENCIES order (same as the Mini App), not event order.
+    expect(chunks[0]!.startsWith("<b>Итого</b>\n<i>RUB</i>")).toBe(true);
   });
 });
 

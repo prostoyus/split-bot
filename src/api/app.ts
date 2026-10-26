@@ -52,7 +52,7 @@ const cors: MiddlewareHandler<AppEnv> = async (c, next) => {
     const headers = new Headers({ Vary: "Origin" });
     if (allowed) {
       headers.set("Access-Control-Allow-Origin", origin);
-      headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+      headers.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
       headers.set("Access-Control-Allow-Headers", "X-Telegram-Init-Data, Content-Type");
       headers.set("Access-Control-Max-Age", "600");
     }
@@ -360,6 +360,14 @@ export function createApi(options: ApiOptions = {}): Hono<AppEnv> {
 
   app.get("/events/:event_id", async (c) => {
     const detail = await services.getEventDetail(c.var.deps, pathId(c, "event_id"), c.var.user.id);
+    return c.json(eventDetailOut(c.var.deps, detail));
+  });
+
+  app.patch("/events/:event_id", async (c) => {
+    const eventId = pathId(c, "event_id");
+    const body = await readBody(c);
+    const title = str(body, "title", 500);
+    const detail = await services.renameEvent(c.var.deps, eventId, c.var.user.id, title);
     return c.json(eventDetailOut(c.var.deps, detail));
   });
 

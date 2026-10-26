@@ -486,6 +486,7 @@
     if (h === '/' || h === '') return { name: 'list' };
     if (h === '/new') return { name: 'create' };
     if ((m = /^\/e\/(\d{1,15})\/add$/.exec(h))) return { name: 'add', id: Number(m[1]) };
+    if ((m = /^\/e\/(\d{1,15})\/rename$/.exec(h))) return { name: 'rename', id: Number(m[1]) };
     if ((m = /^\/e\/(\d{1,15})(?:\/(expenses|balances|members))?$/.exec(h))) {
       return { name: 'event', id: Number(m[1]), tab: m[2] || 'expenses' };
     }
@@ -508,6 +509,7 @@
     if (route.name === 'create') return renderCreate();
     if (route.name === 'event') return renderEvent(route.id, route.tab);
     if (route.name === 'add') return renderAdd(route.id);
+    if (route.name === 'rename') return renderRename(route.id);
   }
 
   /** Returns a function that tells whether the current render is still active. */
@@ -576,11 +578,83 @@
         el('header', { class: 'page-header' },
           el('h1', { class: 'page-title', text: 'Мои события' }),
           state.me ? el('p', { class: 'page-sub', text: 'Привет, ' + userName(state.me) + '!' }) : null),
+        events && events.length ? totalsCard(events) : null,
         content,
         el('div', { class: 'actions' }, createBtn)));
     }, function (err) {
       if (alive()) errorScreen(err, render);
     });
+  }
+
+  /**
+   * Per-currency totals over all events (SPEC "Итого"): owe = sum |net<0|,
+   * owed = sum net>0, total = owed - owe. Currencies are never converted.
+   */
+  function computeTotals(events) {
+    var byCur = {};
+    var order = [];
+    events.forEach(function (ev) {
+      var cur = ev.currency;
+      if (!byCur[cur]) { byCur[cur] = { currency: cur, owe: 0, owed: 0 }; order.push(cur); }
+      var net = Number(ev.my_net) || 0;
+      if (net < 0) byCur[cur].owe += -net; else byCur[cur].owed += net;
+    });
+    var rank = {};
+    CURRENCIES.forEach(function (c, i) { rank[c.code] = i; });
+    order.sort(function (a, b) { return (a in rank ? rank[a] : 99) - (b in rank ? rank[b] : 99) || (a < b ? -1 : 1); });
+    return order.map(function (cur) {
+      var t = byCur[cur];
+      t.total = t.owed - t.owe;
+      return t;
+    });
+  }
+
+  /** Values joined with " и "; each value keeps its own color class. */
+  function joinedAmounts(parts) {
+    var nodes = [];
+    parts.forEach(function (part, i) {
+      if (i) nodes.push(' и ');
+      nodes.push(el('span', { class: 'totals__amount ' + part.cls, text: part.text }));
+    });
+    return nodes;
+  }
+
+  function totalsCard(events) {
+    var totals = computeTotals(events);
+    var owe = totals.filter(function (t) { return t.owe > 0; });
+    var owed = totals.filter(function (t) { return t.owed > 0; });
+    var nonZero = totals.filter(function (t) { return t.total !== 0; });
+    var rows = [];
+    if (owe.length) {
+      rows.push(el('div', { class: 'totals__row' },
+        el('span', { class: 'totals__label', text: 'Вы должны' }),
+        el('span', { class: 'totals__value' }, joinedAmounts(owe.map(function (t) {
+          return { cls: 'text-minus', text: formatMoney(t.owe, t.currency) };
+        })))));
+    }
+    if (owed.length) {
+      rows.push(el('div', { class: 'totals__row' },
+        el('span', { class: 'totals__label', text: 'Вам должны' }),
+        el('span', { class: 'totals__value' }, joinedAmounts(owed.map(function (t) {
+          return { cls: 'text-plus', text: formatMoney(t.owed, t.currency) };
+        })))));
+    }
+    var result;
+    if (!nonZero.length) {
+      result = el('span', { class: 'totals__value' }, el('span', { class: 'totals__amount totals__zero', text: 'Всё ровно' }));
+    } else {
+      result = el('span', { class: 'totals__value' }, joinedAmounts(nonZero.map(function (t) {
+        return t.total > 0
+          ? { cls: 'text-plus', text: 'вам должны ' + formatMoney(t.total, t.currency) }
+          : { cls: 'text-minus', text: 'вы должны ' + formatMoney(-t.total, t.currency) };
+      })));
+    }
+    rows.push(el('div', { class: 'totals__row totals__row--result' },
+      el('span', { class: 'totals__label', text: 'В итоге' }),
+      result));
+    return el('section', { class: 'card totals', 'aria-labelledby': 'totals-title' },
+      el('h2', { class: 'totals__title', id: 'totals-title', text: 'Итого по всем событиям' }),
+      rows);
   }
 
   // ------------------------------------------------------------ screen: create event
@@ -688,8 +762,14 @@
   }
 
   function eventHeader(ev) {
+    var isOwner = !!(state.me && ev.owner_id === state.me.id);
     return el('header', { class: 'event-header' },
-      el('h1', { class: 'page-title', text: ev.title }),
+      el('div', { class: 'event-header__title' },
+        el('h1', { class: 'page-title', text: ev.title }),
+        isOwner ? el('button', {
+          class: 'icon-btn', type: 'button', 'aria-label': 'Переименовать', title: 'Переименовать',
+          onclick: function () { go('#/e/' + ev.id + '/rename'); }
+        }, el('span', { 'aria-hidden': 'true', text: '✏️' })) : null),
       el('div', { class: 'event-header__meta' },
         el('span', { class: 'page-sub', text: ev.members.length + ' ' + plural(ev.members.length, 'участник', 'участника', 'участников') + ' · ' + ev.currency }),
         netBadge(ev.my_net, ev.currency)));
@@ -977,6 +1057,81 @@
       nodes.push(el('p', { class: 'hint', text: 'Ссылка-приглашение пока недоступна. Попробуйте позже.' }));
     }
     fillPanel(panel, nodes);
+  }
+
+  // ------------------------------------------------------------ screen: rename event
+
+  function renderRename(eventId) {
+    var back = '#/e/' + eventId;
+    setBackButton(function () { leaveForm(back); });
+    setMainButton(null);
+    var alive = renderGuard();
+    var cached = state.eventCache && state.eventCache.id === eventId ? state.eventCache : null;
+    if (cached) { buildRenameForm(cached, alive); return; }
+    loadingScreen('form');
+    request('/api/events/' + eventId).then(function (ev) {
+      state.eventCache = ev;
+      if (alive()) buildRenameForm(ev, alive);
+    }, function (err) {
+      if (alive()) errorScreen(err, render);
+    });
+  }
+
+  function buildRenameForm(ev, alive) {
+    var back = '#/e/' + ev.id;
+    if (!state.me || ev.owner_id !== state.me.id) {
+      // Only the owner may rename; the server enforces it too.
+      toast('Переименовать событие может только его создатель', true);
+      go(back);
+      return;
+    }
+    var original = ev.title;
+    var titleInput = el('input', {
+      class: 'input', id: 'f-title', type: 'text', maxlength: String(TITLE_MAX), autocomplete: 'off',
+      autocapitalize: 'sentences', enterkeyhint: 'done', required: 'required',
+      oninput: function () { setDirty(titleInput.value.trim() !== original); }
+    });
+    titleInput.value = original;
+    var errorBox = el('p', { class: 'field-error', role: 'alert', hidden: 'hidden' });
+
+    function submit() {
+      if (state.busy) return;
+      var title = titleInput.value.trim();
+      if (!title) { fieldError(errorBox, 'Введите название события'); titleInput.focus(); return; }
+      if (title.length > TITLE_MAX) { fieldError(errorBox, 'Название слишком длинное (максимум ' + TITLE_MAX + ' символов)'); return; }
+      fieldError(errorBox, null);
+      hideKeyboard();
+      if (title === original) { setDirty(false); go(back); return; }
+      setBusy(true);
+      request('/api/events/' + ev.id, { method: 'PATCH', body: { title: title } }).then(function (fresh) {
+        haptic('success');
+        toast('Название изменено');
+        if (fresh && fresh.id === ev.id) state.eventCache = fresh;
+        else if (state.eventCache && state.eventCache.id === ev.id) state.eventCache.title = title;
+        // Stay busy until the event screen renders (it also refetches the details).
+        if (alive()) { setDirty(false); go(back); }
+      }, function (err) {
+        haptic('error');
+        if (err.uncertain) {
+          // May have been renamed: stay locked and show the real state.
+          toast(err.message, true);
+          state.eventCache = null;
+          if (alive()) { setDirty(false); go(back); }
+          return;
+        }
+        if (alive()) setBusy(false);
+        showAlert(errorText(err));
+      });
+    }
+
+    var form = el('form', { class: 'screen', novalidate: 'novalidate', onsubmit: function (e) { e.preventDefault(); submit(); } },
+      el('header', { class: 'page-header' }, el('h1', { class: 'page-title', text: 'Название события' })),
+      el('div', { class: 'card card--form' },
+        field('Название', titleInput, 'От 1 до ' + TITLE_MAX + ' символов. Участники увидят новое название.')),
+      errorBox,
+      submitFallback('Сохранить'));
+    mount(form);
+    setMainButton('Сохранить', submit);
   }
 
   // ------------------------------------------------------------ screen: add expense

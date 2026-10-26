@@ -71,6 +71,42 @@ describe("users and events", () => {
     await expectError(s.joinByInviteCode(deps, 424242, event.inviteCode), NotFoundError);
   });
 
+  it("rename: owner only, validated, notifies others, no-op on same title", async () => {
+    const { deps, sent } = makeDeps();
+    const event = await eventWithThree(deps);
+    sent.length = 0;
+    const renamed = await s.renameEvent(deps, event.id, A, "  Казань <2026> ");
+    expect(renamed.event).toMatchObject({ id: event.id, title: "Казань <2026>", ownerId: A });
+    expect(renamed.members.map((m) => m.id)).toEqual([A, B, C]);
+    expect(sent.map((m) => m.userId)).toEqual([B, C]);
+    expect(sent[0]!.html).toBe(
+      "<b>Алиса Иванова</b> переименовал(а) событие «Поездка» в «Казань &lt;2026&gt;»",
+    );
+    expect(sent.every((m) => m.extra?.eventId === event.id)).toBe(true);
+    expect((await s.getEventDetail(deps, event.id, B)).event.title).toBe("Казань <2026>");
+
+    sent.length = 0;
+    const same = await s.renameEvent(deps, event.id, A, "Казань <2026>");
+    expect(same.event.title).toBe("Казань <2026>");
+    expect(sent).toEqual([]);
+
+    await expectError(
+      s.renameEvent(deps, event.id, B, "Чужое"),
+      ForbiddenError,
+      "Переименовать событие может только его создатель",
+    );
+    await expectError(s.renameEvent(deps, event.id, M, "Чужое"), ForbiddenError, "Вы не участник этого события");
+    await expectError(s.renameEvent(deps, 999999, A, "Нет"), NotFoundError, "Событие не найдено");
+    await expectError(s.renameEvent(deps, event.id, A, "   "), BadRequestError, "Поле «название» не может быть пустым");
+    await expectError(
+      s.renameEvent(deps, event.id, A, "x".repeat(65)),
+      BadRequestError,
+      "Поле «название» слишком длинное (максимум 64 символов)",
+    );
+    expect((await s.getEventDetail(deps, event.id, A)).event.title).toBe("Казань <2026>");
+    expect(sent).toEqual([]);
+  });
+
   it("caps members at 40", async () => {
     const { deps, sent } = makeDeps();
     await seedUsers(deps);

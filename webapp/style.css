@@ -569,3 +569,44 @@ select.input {
   .share-row { padding: 8px 12px; gap: 8px; }
   .input--share { width: 96px; }
 }
+
+/* ---------- totals across events ("Итого") */
+
+.totals { padding: 12px 16px; margin-bottom: 12px; }
+.totals__title { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.totals__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 12px;
+  padding: 6px 0;
+  font-size: 15px;
+}
+.totals__row + .totals__row { border-top: 1px solid var(--separator); }
+.totals__label { color: var(--hint); }
+.totals__row--result .totals__label { color: var(--text); font-weight: 600; }
+.totals__value { margin-left: auto; text-align: right; min-width: 0; }
+.totals__amount { white-space: nowrap; }
+.totals__zero { color: var(--hint); font-weight: 600; }
+
+/* ---------- event title + rename button */
+
+.event-header__title { display: flex; align-items: flex-start; gap: 4px; }
+.event-header__title .page-title { flex: 1 1 auto; min-width: 0; }
+
+.icon-btn {
+  flex: 0 0 auto;
+  width: 44px; height: 44px;
+  margin: -8px -10px -8px 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.icon-btn:active { background: var(--soft); }
