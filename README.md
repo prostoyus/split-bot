@@ -1,9 +1,10 @@
 # Split Bot — "Who owes whom"
 
 Telegram bot + Mini App for splitting shared expenses (trips, parties, shared flats).
+Runs 24/7 on the Cloudflare free plan.
 
 - Create an event and invite friends with a link
-- Add expenses: who paid, how much, split between whom
+- Add expenses: who paid, how much, split equally or with custom amounts per person
 - See balances and the minimal list of transfers ("who owes whom")
 - Mark a debt as returned — the recipient confirms it
 - Notifications and periodic reminders to debtors
@@ -11,59 +12,78 @@ Telegram bot + Mini App for splitting shared expenses (trips, parties, shared fl
 ## How it works
 
 ```
-GitHub Pages (static)                     Your PC: python run.py
-https://prostoyus.github.io/split-bot/    ┌────────────────────────────────────┐
-  webapp/  ── fetch() ──►                 │ cloudflared quick tunnel (https)   │
-                                          │   └► FastAPI  127.0.0.1:8080       │
-                                          │ aiogram bot (long polling)         │
-                                          │ SQLite  data/split.db              │
-                                          └────────────────────────────────────┘
+GitHub Pages (static)                       Cloudflare (free plan)
+https://prostoyus.github.io/split-bot/      ┌──────────────────────────────────────────┐
+  webapp/  ── fetch() ─────────────────►    │ Worker "split-bot" (TypeScript)          │
+                                            │   /api/*        REST API (Hono)          │
+Telegram  ── webhook ──────────────────►    │   /tg/webhook   bot (grammY)             │
+                                            │   /admin/setup  one-time Telegram setup  │
+                                            │   cron hourly   debt reminders           │
+                                            │ D1 database (SQLite)                     │
+                                            └──────────────────────────────────────────┘
 ```
 
-- `webapp/` — the Mini App (plain HTML/CSS/JS), served by GitHub Pages.
-- `app/` — backend: FastAPI API, SQLite database, business logic, Telegram initData auth.
-- `bot/` — aiogram 3 bot: `/start`, `/debts`, `/help`, invite links, notifications, reminders.
-- `tunnel.py` — starts a free Cloudflare quick tunnel so the Mini App can reach the API on your PC.
-- `run.py` — starts everything in one process.
+- `webapp/` — the Mini App (plain HTML/CSS/JS), served by GitHub Pages. API address is in `webapp/config.js`.
+- `src/core/` — business logic (money math, splits, balances, settlements).
+- `src/api/` — REST API and Telegram `initData` authentication.
+- `src/bot/` — bot commands, notifications, reminders, webhook setup.
+- `migrations/` — D1 database schema.
 
-The bot and the API work only while `run.py` is running. The tunnel URL changes on every start;
-the bot passes it to the Mini App automatically.
+See [SPEC.md](SPEC.md) for the full technical spec. The first version (Python + local tunnel) is kept in the
+git tag [`v1-python`](https://github.com/prostoyus/split-bot/tree/v1-python).
 
-See [SPEC.md](SPEC.md) for the full technical spec (data model, API, auth).
+## Deploy your own copy
 
-## Setup (Windows)
+Requires Node.js 22+ and a free Cloudflare account. On Windows PowerShell use `npx.cmd` instead of `npx`
+if script execution is disabled.
 
 1. Create a bot in [@BotFather](https://t.me/BotFather) (`/newbot`) and copy the token.
-2. Install dependencies:
+2. Install dependencies and log in to Cloudflare:
 
    ```
-   python -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+   npm ci
+   npx wrangler login
    ```
 
-3. Download `cloudflared-windows-amd64.exe` from
-   [cloudflare/cloudflared releases](https://github.com/cloudflare/cloudflared/releases/latest)
-   and save it as `tools\cloudflared.exe`.
-4. Copy `.env.example` to `.env` and set `BOT_TOKEN`.
-5. Run:
+3. Create the database and put its id into `wrangler.jsonc` (`database_id`), then create the tables:
 
    ```
-   .\.venv\Scripts\python.exe run.py
+   npx wrangler d1 create split-bot
+   npm run db:migrate:remote
    ```
 
-6. Open your bot in Telegram and press **Start**.
+4. In `wrangler.jsonc` set `WEBAPP_URL`, `ALLOWED_ORIGINS` (your GitHub Pages origin) and `BOT_USERNAME`.
+5. Deploy and set the secrets (`WEBHOOK_SECRET` and `ADMIN_SECRET` are any long random strings):
 
-## Tests
+   ```
+   npx wrangler deploy
+   npx wrangler secret put BOT_TOKEN
+   npx wrangler secret put WEBHOOK_SECRET
+   npx wrangler secret put ADMIN_SECRET
+   ```
+
+6. Connect the bot to the Worker (sets the webhook, commands and the menu button):
+
+   ```
+   curl -X POST https://<your-worker>.workers.dev/admin/setup -H "Authorization: Bearer <ADMIN_SECRET>"
+   ```
+
+7. Put your Worker URL into `webapp/config.js` (`apiBase`), enable GitHub Pages for the repo
+   (Settings → Pages → branch `main`, folder `/`), and open your bot in Telegram.
+
+## Development
 
 ```
-.\.venv\Scripts\python.exe -m pytest -q
+npm test            # vitest in the real Workers runtime with a local D1
+npm run typecheck
+npm run dev         # local Worker; copy .dev.vars.example to .dev.vars first
 ```
+
+The Mini App can be pointed at a local Worker with `?api=http://127.0.0.1:8787`.
 
 ## Security notes
 
-- `.env` (bot token) and `data/` (database) are never committed.
+- Secrets live only in Cloudflare (`wrangler secret`) or in the gitignored `.dev.vars`.
 - Every API request is authenticated by validating Telegram `initData` (HMAC with the bot token, max age 24h).
-- The Mini App only talks to `*.trycloudflare.com` or localhost API addresses.
-- Quick tunnel URLs are random and change on every start, so buttons in old bot messages point to a dead
-  address. For long-term use, prefer a named Cloudflare tunnel or your own domain and pin that exact URL
-  in the `webapp/app.js` whitelist.
+- The webhook accepts only requests carrying Telegram's secret token header; `/admin/setup` requires a bearer secret.
+- The Mini App talks only to the API address in `config.js` and has a strict Content-Security-Policy.

@@ -1,85 +1,113 @@
-# Split Bot ("Who owes whom") — technical spec
+# Split Bot ("Who owes whom") — technical spec (v2, Cloudflare Workers)
 
 Telegram bot + Mini App for splitting shared expenses (trips, parties, flats).
 Single source of truth for all agents. Do not change contracts here without updating this file.
+v1 (Python, aiogram, cloudflared tunnel) is preserved in git tag `v1-python` — use it as the reference
+implementation for business rules, texts and edge cases (`git show v1-python:app/services.py` etc.).
 
 ## Runtime architecture
 
 ```
-GitHub Pages (static)                 User's PC (python run.py)
-https://prostoyus.github.io/          ┌──────────────────────────────────────┐
-  split-bot/webapp/  ──fetch()──►     │ cloudflared quick tunnel (https)     │
-  (index.html, app.js, style.css)     │   └► uvicorn FastAPI  127.0.0.1:8080 │
-                                      │ aiogram 3 bot (long polling)         │
-                                      │ SQLite file data/split.db            │
-                                      └──────────────────────────────────────┘
+GitHub Pages (static)                       Cloudflare (free plan)
+https://prostoyus.github.io/split-bot/      ┌───────────────────────────────────────────────┐
+  webapp/  ── fetch() ───────────────────►  │ Worker "split-bot" (TypeScript)               │
+                                            │   fetch:  /api/*        Hono REST API          │
+Telegram  ── webhook POST ──────────────►   │           /tg/webhook   grammY bot             │
+                                            │           /admin/setup  one-time Telegram setup │
+                                            │   scheduled (cron, hourly): debt reminders     │
+                                            │ D1 database "split-bot" (SQLite)               │
+                                            └───────────────────────────────────────────────┘
 ```
 
-- `run.py` starts `tools/cloudflared.exe tunnel --url http://127.0.0.1:8080`, reads the
-  `https://<random>.trycloudflare.com` URL from its output, then runs FastAPI (uvicorn) and the
-  aiogram bot in ONE asyncio event loop. If `PUBLIC_API_URL` is set in `.env`, the tunnel is skipped
-  and that URL is used (useful for tests / other hosting).
-- The bot opens the Mini App with URL `WEBAPP_URL?api=<urlencoded API base URL>` (+ `&event=<id>` when
-  relevant). The frontend reads `api` from the query string and **only accepts** it if it matches
-  `^https://[a-z0-9-]+\.trycloudflare\.com$` or `^http://(localhost|127\.0\.0\.1)(:\d+)?$`
-  (otherwise show an error). This prevents phishing links from sending initData elsewhere.
-- Everything works only while `run.py` is running (same as snake-bot).
+- Public URL: `https://split-bot.<account-subdomain>.workers.dev` (known after first deploy).
+- Always on, no sleeping. Free plan limits that shape the design (verify current values in Cloudflare docs):
+  100k requests/day, **10 ms CPU per invocation**, limited subrequests per invocation, 5 cron triggers.
+  Keep handlers light: no heavy libs, WebCrypto for HMAC, few D1 round-trips (use `db.batch` where natural).
 
 ## Tech
 
-- Python 3.13, venv in `.venv/`. Deps in `requirements.txt`: aiogram 3, fastapi, uvicorn, sqlalchemy 2 (async),
-  aiosqlite, python-dotenv, pytest, pytest-asyncio, httpx.
-- Frontend: plain HTML/CSS/JS, no build step, no npm. Telegram WebApp SDK from
-  `https://telegram.org/js/telegram-web-app.js`.
-- Code, comments, commits in English. User-facing texts in Russian.
+- Node.js 24 LTS (installed), npm. TypeScript, ES modules. Deps already installed in `package.json`:
+  `hono`, `grammy`; dev: `wrangler` 4, `typescript`, `vitest` 4, `@cloudflare/vitest-pool-workers`, `@cloudflare/workers-types`.
+  Do not add other runtime deps without a strong reason (state it in your report).
+- Tests: vitest with `@cloudflare/vitest-pool-workers` (real workerd + local D1, migrations applied in tests).
+- Frontend: plain HTML/CSS/JS in `webapp/`, no build step, served by GitHub Pages.
+- Code, comments, commits in English. User-facing texts in Russian (reuse v1 texts).
+- PowerShell note for agents: refresh PATH first so node/npm are found:
+  `$env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User")`
 
-## Config (.env, never committed)
+## Config
 
-```
-BOT_TOKEN=            # from @BotFather
-WEBAPP_URL=https://prostoyus.github.io/split-bot/webapp/
-PUBLIC_API_URL=       # optional; if empty, cloudflared tunnel is used
-API_PORT=8080
-DB_PATH=data/split.db
-REMIND_EVERY_DAYS=3
-ALLOWED_ORIGINS=https://prostoyus.github.io   # comma separated; localhost always allowed
-```
-
-## Project layout
+`wrangler.jsonc` (committed): worker name `split-bot`, `main: src/index.ts`, compatibility date, D1 binding `DB`
+(database `split-bot`; `database_id` placeholder until the real DB is created at deploy), cron `0 * * * *`, vars:
 
 ```
-split-bot/
-  run.py               # entry point (telegram-bot-dev)
-  tunnel.py            # cloudflared launcher (telegram-bot-dev)
-  app/                 # backend (backend-architect)
-    config.py db.py models.py auth.py services.py api.py notifier.py
-  bot/                 # telegram bot (telegram-bot-dev)
-    main.py handlers.py reminders.py keyboards.py
-  webapp/              # Mini App (frontend-developer, mobile-app-builder)
-    index.html app.js style.css
-  tests/               # pytest
-  tools/cloudflared.exe  (gitignored)
-  data/                  (gitignored)
-  requirements.txt .env.example .gitignore README.md SPEC.md
+WEBAPP_URL = "https://prostoyus.github.io/split-bot/webapp/"
+ALLOWED_ORIGINS = "https://prostoyus.github.io"   # comma separated; http://localhost:* and http://127.0.0.1:* always allowed
+REMIND_EVERY_DAYS = "3"
 ```
 
-## Data model (SQLite, SQLAlchemy async)
+Secrets (never committed; `wrangler secret put` in prod, `.dev.vars` locally — gitignored):
 
-Money is stored as **integer minor units** (kopecks). Never floats.
+```
+BOT_TOKEN        # from @BotFather
+WEBHOOK_SECRET   # random 32+ chars; sent by Telegram in X-Telegram-Bot-Api-Secret-Token
+ADMIN_SECRET     # random 32+ chars; protects /admin/setup
+```
+
+`.dev.vars.example` (committed) lists the names with empty values.
+
+## Project layout and ownership
+
+```
+src/
+  index.ts            # Worker entry: export default { fetch, scheduled }   (telegram-bot-dev; composes everything)
+  env.ts              # Env interface (bindings, vars, secrets)              (backend-architect)
+  core/               # backend-architect — pure business logic, no Telegram imports
+    db.ts             # D1 helpers, row mapping
+    money.ts          # formatMoney(amount, currency) — "1 500,50 ₽", hide ",00"
+    split.ts          # splitEqually, validateExactShares, minimizeTransfers (pure)
+    services.ts       # all use cases (see below)
+    notify.ts         # Notifier type + helpers
+    errors.ts         # ServiceError(status, message) + subclasses
+  api/                # backend-architect
+    app.ts            # createApi(): Hono app mounted at /api, CORS, error handling
+    auth.ts           # Telegram initData validation (WebCrypto)
+  bot/                # telegram-bot-dev
+    bot.ts            # createBot(env, deps) grammY bot (webhook mode, botInfo cached — no getMe per request)
+    handlers.ts keyboards.ts texts.ts
+    notifier.ts       # Telegram implementation of Notifier
+    reminders.ts      # runReminders(env, deps, now)
+    setup.ts          # /admin/setup: setWebhook(secret_token, allowed_updates), setMyCommands, setChatMenuButton
+migrations/0001_init.sql   # backend-architect
+test/                      # vitest; core/api tests by backend-architect, bot tests by telegram-bot-dev
+webapp/                    # frontend-developer
+wrangler.jsonc vitest.config.ts tsconfig.json package.json .dev.vars.example
+```
+
+The Python v1 files (`app/ bot/ tests/ run.py tunnel.py requirements.txt pytest.ini .env.example`) are removed at the
+end of the migration by the lead — do not edit them.
+
+## Data model (D1 / SQLite)
+
+Money is stored as **integer minor units** (kopecks). Never floats. Timestamps: INTEGER unix milliseconds (UTC);
+API returns ISO 8601 strings with `Z`.
 
 - `users`: `id` (Telegram user id, PK), `first_name`, `last_name`, `username`, `created_at`
 - `events`: `id`, `title` (1..64 chars), `currency` (default `RUB`; one of RUB, USD, EUR, KZT, UZS, UAH, BYN, TRY, GEL),
-  `invite_code` (random url-safe 10 chars, unique), `owner_id`, `created_at`
-- `members`: `event_id`, `user_id`, `joined_at` (PK event_id+user_id)
-- `expenses`: `id`, `event_id`, `payer_id`, `amount` (>0, <= 100_000_000_00), `description` (1..100),
-  `created_by`, `created_at`
-- `expense_shares`: `expense_id`, `user_id`, `amount` — shares always sum exactly to `amount`.
-  - `split="equal"`: remainder kopecks go one each to the first participants by user id order.
-  - `split="exact"`: shares are given by the client (see API).
-- `expenses.split_mode`: `equal|exact` (default `equal`; added column, migrate existing DBs in `init_db`).
+  `invite_code` (random url-safe 10 chars from crypto.getRandomValues, unique), `owner_id`, `created_at`.
+  Max **50 events owned per user** (400 "Слишком много событий (максимум 50)"; atomic COUNT inside the INSERT).
+- `members`: `event_id`, `user_id`, `joined_at` (PK event_id+user_id). Max **40 members per event**
+  (400 "В событии уже максимум участников") — bounds notification fan-out.
+- `expenses`: `id`, `event_id`, `payer_id`, `amount` (1..10_000_000_000), `description` (1..100), `split_mode`
+  (`equal|exact`), `created_by`, `created_at`. Max **1000 expenses per event**
+  (400 "В событии слишком много трат (максимум 1000)"; check-then-insert, may overshoot slightly under concurrency).
+- `expense_shares`: `expense_id`, `user_id`, `amount` — shares always sum exactly to `amount` (ON DELETE CASCADE).
+  - equal: remainder kopecks go one each to the first participants by user id order.
+  - exact: shares given by the client (see Split modes).
 - `settlements`: `id`, `event_id`, `from_id`, `to_id`, `amount`, `status` (`pending|confirmed|rejected`),
-  `created_at`, `resolved_at`. At most one `pending` settlement per (event, from, to) — partial unique index.
-- `reminders`: `event_id`, `user_id`, `last_sent_at` (for reminder throttling)
+  `created_at`, `resolved_at`. Partial unique index: one `pending` per (event_id, from_id, to_id).
+- `reminders`: `event_id`, `user_id`, `last_sent_at` (PK event_id+user_id)
+- Foreign keys and CHECK constraints as in v1. Indexes for event_id lookups.
 
 ## Balance rules
 
@@ -92,12 +120,19 @@ Money is stored as **integer minor units** (kopecks). Never floats.
 ## Auth
 
 - Every `/api/*` request (except `GET /api/health`) must send header `X-Telegram-Init-Data: <Telegram.WebApp.initData>`.
-- Backend validates per Telegram docs: HMAC-SHA256 with secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN),
-  constant-time compare, reject if `auth_date` older than 24h. On success upsert the user from the `user` field.
+- Validate per Telegram docs: secret = HMAC_SHA256(key="WebAppData", msg=BOT_TOKEN); data_check_string = sorted
+  `key=value` lines without `hash`; constant-time compare; reject duplicate keys; reject `auth_date` older than 24h
+  (allow 5 min clock skew into the future); parse `user` JSON defensively; upsert the user.
 - 401 on invalid/missing. 403 if user is not a member of the event. 404 for unknown ids.
-- CORS: allow origins from `ALLOWED_ORIGINS` plus `http://localhost:*` / `http://127.0.0.1:*`; allow header `X-Telegram-Init-Data`, `Content-Type`.
+- CORS: allow origins from `ALLOWED_ORIGINS` plus `http://localhost:*` / `http://127.0.0.1:*`;
+  allow headers `X-Telegram-Init-Data`, `Content-Type`; no credentials.
+- `/tg/webhook`: reject (401, no processing) unless header `X-Telegram-Bot-Api-Secret-Token` equals `WEBHOOK_SECRET`
+  (constant-time compare).
+- `/admin/setup` (POST): requires header `Authorization: Bearer <ADMIN_SECRET>` (constant-time compare), else 401.
+  Uses the request's own origin to build the webhook URL `<origin>/tg/webhook`. Returns JSON summary, never secrets.
+- Rate limiting: best-effort per-isolate limiter (120 req/min per user → 429 "Слишком много запросов") is enough.
 
-## REST API (JSON, prefix `/api`)
+## REST API (JSON, prefix `/api`) — same contract as v1
 
 User object everywhere: `{ "id": int, "name": str, "username": str|null }` (`name` = first + last name).
 
@@ -119,67 +154,70 @@ User object everywhere: `{ "id": int, "name": str, "username": str|null }` (`nam
 | POST | `/api/settlements/{id}/confirm` | – | settlement — only `to` user, only if pending (atomic conditional UPDATE; otherwise 400 "Этот возврат уже обработан") |
 | POST | `/api/settlements/{id}/reject` | – | same rules as confirm |
 
-Errors: `{ "detail": "<Russian human-readable message>" }` with proper status codes (400/401/403/404/422/429).
-Unexpected errors → 500 `{ "detail": "Внутренняя ошибка сервера" }`, produced inside the CORS layer so CORS headers are present.
-Amounts in API are integers in minor units.
+`bot_username` comes from env/bot info (see Bot). Errors: `{ "detail": "<Russian message>" }` with status
+400/401/403/404/413/422/429. Unexpected errors → 500 `{ "detail": "Внутренняя ошибка сервера" }` with CORS headers.
+Amounts in API are integers in minor units. Request body JSON must be validated strictly (types, ranges, lengths).
+Request bodies are limited to **64 KB in bytes**: counted while streaming (a missing or false Content-Length is not
+trusted) → 413 "Слишком большой запрос"; invalid UTF-8 → 422.
 
 ### Split modes (POST expenses)
 
-- `split` omitted or `"equal"`: `participant_ids` required (non-empty, unique, all members); equal split as before.
-  `shares` must be absent.
+- `split` omitted or `"equal"`: `participant_ids` required (non-empty, unique, all members). `shares` must be absent.
 - `split="exact"`: `shares` required: non-empty list of `{user_id, amount}`; user_ids unique and members;
-  every amount is an int > 0; sum of amounts must equal `amount` exactly, otherwise 400
+  every amount is an int > 0; sum must equal `amount` exactly, otherwise 400
   "Сумма долей (X) не совпадает с суммой траты (Y)" (formatted money). `participant_ids` must be absent.
-- Payer is always a member; payer may or may not have a share.
-- Response `split` field echoes the stored mode.
+- Payer is always a member; payer may or may not have a share. Response `split` echoes the stored mode.
 - "Absent" means missing or `null`; any other value of the wrong-mode field (even `[]`) → 400.
   Errors (400 unless noted): "При равном делении доли не указываются", "При точном делении укажите доли,
   а не список участников", "Укажите доли участников", "Доля каждого участника должна быть больше нуля",
   "Участники не должны повторяться", "Все участники траты должны быть участниками события";
   unknown `split` value or non-integer share → 422 with a Russian `detail`.
 
-## Notifications (app/notifier.py)
+## Services (src/core/services.ts) — used by API and bot
 
-Backend never imports aiogram. It calls an injected async callable:
+All take `deps: Deps` first: `interface Deps { db: D1Database; notify: Notifier; botUsername?: string }`.
+`type Notifier = (userId: number, html: string, extra?: { eventId?: number }) => void` — fire-and-forget; the
+implementation schedules delivery with `ctx.waitUntil`, so responses never wait for Telegram. Services call
+`notify` only after their DB writes succeed. HTML-escape every user-supplied value in texts.
 
-```python
-# app/notifier.py
-Notify = Callable[[int, str, dict | None], Awaitable[None]]  # (user_id, html_text, extra) ; extra may hold {"event_id": int}
-set_notifier(fn); async def notify(user_id, text, extra=None)  # no-op if not set; swallow & log errors
-async def drain(timeout)  # await pending deliveries; cancel leftovers after timeout
-```
+Required exports (names fixed; signatures may add optional params):
+`upsertUser`, `createEvent`, `getEventDetail`, `joinByInviteCode(deps, userId, codeOrJoinPayload) -> { event, joinedNow }`,
+`listUserEvents`, `addExpense`, `listExpenses`, `deleteExpense`, `getEventBalances`, `createSettlement`,
+`listSettlements`, `confirmSettlement`, `rejectSettlement`,
+`getUserDebtsSummary(deps, userId) -> [{ eventId, title, currency, net, owes:[{toUser, amount}], owedBy:[{fromUser, amount}] }]`,
+`findDebtorsToRemind(deps, now, remindEveryDays, limit) -> [{ eventId, eventTitle, currency, userId, amount }]`
+(skips debtors with a pending settlement in that event; ordered never-reminded / least-recently-reminded first,
+then event id, user id, so persistently failing rows cannot starve others), `markReminded(deps, eventId, userId, now)`.
 
-`notify()` does not wait for delivery: it schedules a background task (strong refs kept until done), so HTTP
-responses are never blocked by Telegram. Call `drain(timeout)` on shutdown (and in tests before asserting).
+## Notifications (to everyone except the actor), with an "Открыть событие" web_app button
 
-The bot wires it in `run.py` so notifications are sent with an "Открыть" web_app button to the event.
-Events that trigger notifications (to everyone except the actor):
 - someone joined the event → other members
-- expense added → participants and payer (show amount, description, their share)
+- expense added → participants and payer (amount, description, their own share)
 - settlement created → recipient ("Вася отметил, что вернул вам 1 500 ₽ — подтвердите")
 - settlement confirmed/rejected → sender
+- Delivery errors (blocked bot, chat not found, 429) are swallowed and logged; never retried in a loop.
 
-## Bot (aiogram 3)
+## Bot (grammY, webhook)
 
-- `/start` — greeting + button "Открыть" (web_app). Sets chat menu button to web_app.
-- `/start join_<code>` — joins the event (via app.services), replies "Вы в событии «…»" + button opening that event.
-- `/help` — short explanation in Russian.
-- `/debts` — text summary of what the user owes / is owed across events.
-- Reminders: background task, every hour checks; for each debtor (net<0) in each event, if no reminder in
-  `REMIND_EVERY_DAYS` days, send "Напоминание: вы должны X ₽ в «…»" with button. Throttle via `reminders` table.
-  Debtors who have a pending settlement in that event are skipped (waiting for confirmation).
-- Bot may call `app.services` functions directly (same process, same DB).
+- Webhook only (no polling). `bot.ts` must not call `getMe` on every request: use `botInfo` cached per isolate
+  (fetched once and memoized) or provided via config.
+- Private chats only.
+- `/start` — greeting + button "Открыть" (web_app). `/start join_<code>` — joins the event, replies
+  "Вы в событии «…»" / "Вы уже в событии «…»" + button to the event; nice message for invalid code.
+- `/help` — short explanation. `/debts` — text summary across events ("Долгов нет 🎉" if none), split at 4096 chars.
+- Any other text → hint with commands. Errors → logged, user gets "Что-то пошло не так…".
+- Mini App URL: `WEBAPP_URL` + `?event=<id>` when relevant (no `api` param in v2 — the webapp knows its API base).
+- `/admin/setup` sets: webhook (`secret_token`, `allowed_updates: ["message"]`, drop pending updates),
+  commands (/start, /debts, /help), chat menu button "Открыть" → WEBAPP_URL.
+- Reminders (cron hourly): for each debtor (net<0) in each event with no reminder in `REMIND_EVERY_DAYS` days and no
+  pending settlement there, send "Напоминание: вы должны X в «…»" + button, then `markReminded`. Process at most a
+  safe batch per run (stay under the subrequest limit); the rest go next hour. Unreachable users are marked too.
 
-## Mini App screens (Russian UI, Telegram theme colors via CSS vars `--tg-theme-*`)
+## Mini App (webapp/)
 
-1. **Мои события** — list with my balance per event (green "вам должны", red "вы должны"), button "Создать событие".
-2. **Создать событие** — title, currency.
-3. **Событие** (tabs): **Траты** (list + add), **Балансы** (who owes whom + "Я вернул" button on my transfers),
-   **Участники** (list + "Пригласить" button → `Telegram.WebApp.openTelegramLink("https://t.me/share/url?url=<invite_link>&text=...")` and copy link).
-   Pending settlements addressed to me show "Подтвердить / Отклонить".
-4. **Добавить трату** — amount (decimal input in major units, converted to kopecks), description, who paid (select), split between (checkboxes, all by default).
-- Use Telegram MainButton / BackButton where natural, haptic feedback, `Telegram.WebApp.ready()` and `expand()`.
-- Opened with `?event=<id>` → go directly to that event.
-- Money formatting: `1 500,50 ₽` style (ru-RU), currency symbol by code.
-- Must work in light and dark Telegram themes, 320px+ width.
-- For local testing outside Telegram: if `Telegram.WebApp.initData` is empty, show a clear message "Откройте через Telegram-бота".
+- API base comes from `webapp/config.js`: `window.SPLIT_CONFIG = { apiBase: "https://split-bot.<sub>.workers.dev" }`
+  (filled in after first deploy). A `?api=` query param is accepted ONLY if it matches
+  `^http://(localhost|127\.0\.0\.1)(:\d+)?$` (local development). Anything else → error screen.
+- Screens and behaviour unchanged from v1 (see webapp code): Мои события, Создать событие, Событие (Траты / Балансы /
+  Участники), Новая трата with "Поровну" / "Указать суммы", "Я вернул", confirm/reject, invite link, theme support,
+  320px+, Telegram BackButton/MainButton, haptics, duplicate-submit protection.

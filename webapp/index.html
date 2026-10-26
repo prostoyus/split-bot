@@ -2,6 +2,14 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <!--
+    Content Security Policy. Only our own files + the Telegram SDK may run; requests only to the API.
+    style-src has 'unsafe-inline' solely for telegram-web-app.js: inside Telegram Web (iframe) it creates a
+    <style> element and fills it with theme CSS sent by web.telegram.org ("set_custom_style"); without it
+    that is blocked with a CSP violation. Our own code sets no inline styles. Scripts stay strict.
+    connect-src: production API on *.workers.dev (see config.js) + localhost for local development.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://telegram.org; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src https://*.workers.dev http://localhost:* http://127.0.0.1:*; base-uri 'none'; form-action 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="format-detection" content="telephone=no">
   <meta name="referrer" content="no-referrer">
@@ -17,6 +25,7 @@
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <noscript>Для работы приложения нужен JavaScript.</noscript>
+  <script src="config.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

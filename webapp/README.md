@@ -1,10 +1,12 @@
 # Mini App (webapp/)
 
-Static files served by GitHub Pages: `index.html`, `app.js`, `style.css`. No build step.
+Static files served by GitHub Pages: `index.html`, `config.js`, `app.js`, `style.css`. No build step.
 
-- Opened by the bot as `WEBAPP_URL?api=<API base URL>[&event=<id>]`.
-- `api` is accepted only if it matches `^https://[a-z0-9-]+\.trycloudflare\.com$` or
-  `^http://(localhost|127\.0\.0\.1)(:\d+)?$` (one trailing `/` is stripped first).
+- Opened by the bot as `WEBAPP_URL[?event=<id>]`.
+- API base comes from `config.js` (`window.SPLIT_CONFIG.apiBase`, e.g. `https://split-bot.<sub>.workers.dev`);
+  it must be a plain https origin (`^https://[a-z0-9.-]+$`, one trailing `/` stripped). Empty → "Приложение ещё не настроено".
+- Local dev only: `?api=` is accepted if it matches `^http://(localhost|127\.0\.0\.1)(:\d+)?$`;
+  any other `api` value (e.g. old trycloudflare links) → "Неверная ссылка" (no fallback to config).
 - Routes (hash, so the query string stays intact): `#/` events, `#/new` create,
   `#/e/<id>` expenses, `#/e/<id>/balances`, `#/e/<id>/members`, `#/e/<id>/add`.
 - All user text is inserted via `textContent` (helper `el()` in `app.js`); never use `innerHTML`.

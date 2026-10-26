@@ -1,0 +1,27 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "split-bot",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "split-bot",
+      // Created by `npx wrangler d1 create split-bot`; replace with your own id when forking.
+      "database_id": "e56c4ab7-c283-4748-a1f2-4394ceeaaae2",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": { "crons": ["0 * * * *"] },
+  "vars": {
+    "WEBAPP_URL": "https://prostoyus.github.io/split-bot/webapp/",
+    // Comma separated. http://localhost:* and http://127.0.0.1:* are always allowed.
+    "ALLOWED_ORIGINS": "https://prostoyus.github.io",
+    "REMIND_EVERY_DAYS": "3",
+    // Lets the bot skip getMe on cold starts.
+    "BOT_USERNAME": "spl1t_money_bot"
+  }
+  // Secrets (wrangler secret put / .dev.vars): BOT_TOKEN, WEBHOOK_SECRET, ADMIN_SECRET
+}

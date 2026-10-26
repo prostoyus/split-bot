@@ -7,10 +7,11 @@
 
   // ------------------------------------------------------------ constants
 
-  var API_PATTERNS = [
-    /^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/,
-    /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
-  ];
+  // ?api= is accepted only for local development (prevents phishing links that
+  // would send initData elsewhere). Production base comes from config.js.
+  var LOCAL_API_RE = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+  // config.js is our own file: require plain https origin (no path/query/fragment).
+  var CONFIG_API_RE = /^https:\/\/[a-z0-9.-]+$/;
 
   var CURRENCIES = [
     { code: 'RUB', symbol: '₽', name: 'Российский рубль' },
@@ -32,7 +33,7 @@
   var REQUEST_TIMEOUT_MS = 15000;
   var MUTATION_TIMEOUT_MS = 30000; // POST/DELETE: give a slow tunnel more time
   var UNCERTAIN_TEXT = 'Не удалось получить ответ сервера. Проверяем, сохранилось ли…';
-  var OFFLINE_TEXT = 'Сервер не отвечает. Возможно, бот выключен.';
+  var OFFLINE_TEXT = 'Сервер не отвечает. Попробуйте ещё раз.';
   var NBSP = ' ';
 
   var tg = (window.Telegram && window.Telegram.WebApp) || null;
@@ -1287,13 +1288,27 @@
 
   // ------------------------------------------------------------ boot
 
+  function stripSlash(value) {
+    var v = String(value || '').trim();
+    return v.slice(-1) === '/' ? v.slice(0, -1) : v;
+  }
+
+  /**
+   * API base: ?api= only for local dev (strict localhost regex), otherwise
+   * SPLIT_CONFIG.apiBase from config.js. error: 'badParam' | 'notConfigured' | null.
+   */
   function readParams() {
     var params = new URLSearchParams(location.search);
-    var api = (params.get('api') || '').trim();
-    if (api.slice(-1) === '/') api = api.slice(0, -1);
-    var valid = API_PATTERNS.some(function (re) { return re.test(api); });
     var event = params.get('event');
-    return { api: valid ? api : null, rawApi: api, event: event && /^\d{1,15}$/.test(event) ? event : null };
+    var res = { api: null, error: null, event: event && /^\d{1,15}$/.test(event) ? event : null };
+    if (params.has('api')) {
+      var local = stripSlash(params.get('api'));
+      if (LOCAL_API_RE.test(local)) res.api = local; else res.error = 'badParam';
+      return res;
+    }
+    var cfg = window.SPLIT_CONFIG && typeof window.SPLIT_CONFIG.apiBase === 'string' ? stripSlash(window.SPLIT_CONFIG.apiBase) : '';
+    if (CONFIG_API_RE.test(cfg)) res.api = cfg; else res.error = 'notConfigured';
+    return res;
   }
 
   function loadMe() {
@@ -1349,12 +1364,14 @@
       return;
     }
     if (!params.api) {
-      messageScreen({
+      messageScreen(params.error === 'badParam' ? {
         icon: '!',
         title: 'Неверная ссылка',
-        text: params.rawApi
-          ? 'Адрес сервера в ссылке не похож на настоящий. Откройте приложение заново кнопкой в боте.'
-          : 'В ссылке нет адреса сервера. Откройте приложение кнопкой в боте.'
+        text: 'Ссылка на приложение содержит чужой адрес сервера. Откройте приложение заново кнопкой в боте.'
+      } : {
+        icon: '⚙',
+        title: 'Приложение ещё не настроено',
+        text: 'Не указан адрес сервера. Сообщите владельцу бота — ему нужно заполнить настройки приложения.'
       });
       return;
     }
