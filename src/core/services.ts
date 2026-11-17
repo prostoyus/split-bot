@@ -171,6 +171,8 @@ export type UserReminder = {
   owe: { currency: string; amount: number }[];
   /** Events with effective net < 0 in those currencies, amount = |net|, largest first. */
   events: { eventId: number; title: string; currency: string; amount: number }[];
+  /** Events with effective net > 0 in those currencies (they offset the debts), largest first. */
+  owedEvents: { eventId: number; title: string; currency: string; amount: number }[];
 };
 
 // ---------------------------------------------------------------- helpers
@@ -925,7 +927,7 @@ export async function findUsersToRemind(
        SELECT d.user_id, d.last_sent, n.currency, n.total, f.event_id, f.title, f.net
        FROM due d
        JOIN neg n ON n.user_id = d.user_id
-       JOIN eff f ON f.user_id = d.user_id AND f.currency = n.currency AND f.net < 0
+       JOIN eff f ON f.user_id = d.user_id AND f.currency = n.currency
        ORDER BY d.last_sent, d.user_id`,
     )
     .bind(threshold, Math.max(0, Math.floor(limit)))
@@ -940,19 +942,25 @@ export async function findUsersToRemind(
     }>();
 
   // Rows are grouped by user in due order; build one UserReminder per user.
-  const byUser = new Map<number, { owe: Map<string, number>; events: UserReminder["events"] }>();
+  type Bucket = { owe: Map<string, number>; events: UserReminder["events"]; owedEvents: UserReminder["owedEvents"] };
+  const byUser = new Map<number, Bucket>();
   for (const r of res.results) {
     let u = byUser.get(r.user_id);
-    if (!u) byUser.set(r.user_id, (u = { owe: new Map(), events: [] }));
+    if (!u) byUser.set(r.user_id, (u = { owe: new Map(), events: [], owedEvents: [] }));
     u.owe.set(r.currency, -Number(r.total));
-    u.events.push({ eventId: r.event_id, title: r.title, currency: r.currency, amount: -Number(r.net) });
+    const net = Number(r.net);
+    const item = { eventId: r.event_id, title: r.title, currency: r.currency, amount: Math.abs(net) };
+    (net < 0 ? u.events : u.owedEvents).push(item);
   }
+  const byAmount = (a: { amount: number; eventId: number }, b: { amount: number; eventId: number }) =>
+    b.amount - a.amount || a.eventId - b.eventId;
   return [...byUser].map(([userId, u]) => ({
     userId,
     owe: [...u.owe]
       .map(([currency, amount]) => ({ currency, amount }))
       .sort((a, b) => b.amount - a.amount || a.currency.localeCompare(b.currency)),
-    events: u.events.sort((a, b) => b.amount - a.amount || a.eventId - b.eventId),
+    events: u.events.sort(byAmount),
+    owedEvents: u.owedEvents.sort(byAmount),
   }));
 }
 

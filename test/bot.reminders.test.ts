@@ -116,6 +116,38 @@ describe("formatUserReminder", () => {
     // No truncation line when everything fits.
     expect(formatUserReminder(small)).not.toContain("…и ещё");
   });
+
+  it("shows both sides when other events offset the debt", () => {
+    expect(
+      formatUserReminder({
+        owe: [{ currency: "RUB", amount: 5400 }],
+        events: [{ eventId: 1, title: "Аптека", currency: "RUB", amount: 123000 }],
+        owedEvents: [{ eventId: 2, title: "Продукты", currency: "RUB", amount: 117600 }],
+      }),
+    ).toBe(
+      [
+        "🔔 <b>Напоминание о долгах</b>",
+        "Всего вы должны: 54 ₽",
+        "Вы должны:",
+        "«Аптека» — 1 230 ₽",
+        "Вам должны:",
+        "«Продукты» — 1 176 ₽",
+        "",
+        "Подробности и кнопка «Я вернул» — в приложении.",
+      ].join("\n"),
+    );
+  });
+
+  it("truncation counts both sides and stays within the limit", () => {
+    const many = (n: number, base: number) =>
+      Array.from({ length: n }, (_, i) => ({ eventId: base + i, title: `Событие ${base + i}`, currency: "RUB", amount: 100 }));
+    const text = formatUserReminder({ owe: [{ currency: "RUB", amount: 1 }], events: many(150, 1), owedEvents: many(150, 1000) });
+    expect(text.length).toBeLessThan(4096);
+    const more = /…и ещё (\d+)\n\nПодробности/.exec(text);
+    expect(more).not.toBeNull();
+    const listed = text.split("\n").filter((l) => l.startsWith("«")).length;
+    expect(listed + Number(more![1])).toBe(300);
+  });
 });
 
 describe("runReminders (weekly, by totals)", () => {

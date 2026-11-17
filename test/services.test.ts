@@ -543,6 +543,7 @@ describe("weekly reminders by totals", () => {
           { eventId: sochi.id, title: "Сочи", currency: "RUB", amount: 200000 },
           { eventId: flat.id, title: "Квартира", currency: "RUB", amount: 50000 },
         ],
+        owedEvents: [],
       },
     ]);
   });
@@ -578,6 +579,8 @@ describe("weekly reminders by totals", () => {
       { eventId: rub1.id, title: "Рубли-1", currency: "RUB", amount: 1000 },
       { eventId: eur.id, title: "Евро", currency: "EUR", amount: 300 },
     ]);
+    // Offsetting events are listed only for the negative currencies (RUB), not for USD.
+    expect(due.owedEvents).toEqual([{ eventId: rub2.id, title: "Рубли-2", currency: "RUB", amount: 200 }]);
   });
 
   it("pending settlements sent count as paid", async () => {

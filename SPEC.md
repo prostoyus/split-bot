@@ -223,7 +223,8 @@ Required exports (names fixed; signatures may add optional params):
   A user is **due** if at least one currency total < 0 AND (`user_reminders` has no row OR
   `last_sent_at` ≤ now − REMIND_EVERY_DAYS days).
 - `type UserReminder = { userId: number; owe: { currency: string; amount: number }[];  // only currencies with total < 0, amount = |total|
-  events: { eventId: number; title: string; currency: string; amount: number }[] }` // events with effective net < 0 in those currencies, amount = |net|, largest first
+  events: { eventId: number; title: string; currency: string; amount: number }[];   // events with effective net < 0 in those currencies, amount = |net|, largest first
+  owedEvents: { eventId: number; title: string; currency: string; amount: number }[] }` // events with effective net > 0 in those currencies (offsets), largest first
 - Order due users by COALESCE(last_sent_at, 0), then user id; at most `limit` (40) per run (free-plan subrequests).
 - Text (HTML, escaped):
   ```
@@ -233,6 +234,8 @@ Required exports (names fixed; signatures may add optional params):
   «Сочи» — 2 000 ₽
   «Квартира» — 1 000 ₽
   ```
+  When `owedEvents` is non-empty, "Из них:" is replaced by two sections "Вы должны:" (events) and
+  "Вам должны:" (owedEvents), so a small total next to a big per-event debt is not confusing.
   then "Подробности и кнопка «Я вернул» — в приложении." Keep under 4096 chars (truncate the event list with
   "…и ещё N"). Button: web_app "Открыть" → WEBAPP_URL (no event param).
 - After the run: one `markUsersReminded` batch for sent + permanently unreachable users (any Telegram 4xx except 429);

@@ -61,29 +61,45 @@ export const REMINDER_FOOTER = "Подробности и кнопка «Я ве
  * Weekly reminder by totals (SPEC "Weekly reminders (by totals)"), one message per user.
  * The event list is truncated with "…и ещё N" so the message stays within `limit` characters.
  */
-export function formatUserReminder(r: Pick<UserReminder, "owe" | "events">, limit: number = MAX_MESSAGE_LEN): string {
+export function formatUserReminder(
+  r: Pick<UserReminder, "owe" | "events"> & Partial<Pick<UserReminder, "owedEvents">>,
+  limit: number = MAX_MESSAGE_LEN,
+): string {
   const total = r.owe.map((o) => formatMoney(o.amount, o.currency)).join(" и ");
   const head = [REMINDER_TITLE, `Всего вы должны: ${total}`];
   const tail = ["", REMINDER_FOOTER];
-  const lines = r.events.map((e) => `«${escapeHtml(e.title)}» — ${formatMoney(e.amount, e.currency)}`);
-  if (lines.length === 0) return [...head, ...tail].join("\n");
+  const line = (e: UserReminder["events"][number]) => `«${escapeHtml(e.title)}» — ${formatMoney(e.amount, e.currency)}`;
+  const owed = r.owedEvents ?? [];
+  // Without offsetting events the debts add up to the total ("Из них"); otherwise show both sides,
+  // so a small total next to a big per-event debt is not confusing.
+  const items: { text: string; header?: true }[] = [];
+  if (r.events.length > 0) {
+    items.push({ text: owed.length > 0 ? "Вы должны:" : "Из них:", header: true });
+    for (const e of r.events) items.push({ text: line(e) });
+  }
+  if (owed.length > 0) {
+    items.push({ text: "Вам должны:", header: true });
+    for (const e of owed) items.push({ text: line(e) });
+  }
+  if (items.length === 0) return [...head, ...tail].join("\n");
 
-  head.push("Из них:");
   // Every part is followed by "\n" except the last one, so this over-counts by one: safe.
   const size = (parts: string[]) => parts.reduce((n, p) => n + p.length + 1, 0);
-  const fixed = size(head) + size(tail);
-  // Room for the "…и ещё N" line (N can never exceed the number of events).
-  const reserve = `…и ещё ${lines.length}`.length + 1;
+  const entries = items.filter((i) => !i.header).length;
+  // Room for the "…и ещё N" line (N can never exceed the number of event lines).
+  const reserve = `…и ещё ${entries}`.length + 1;
   const shown: string[] = [];
-  let used = fixed;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    const isLast = i === lines.length - 1;
-    if (used + line.length + 1 + (isLast ? 0 : reserve) > limit) break;
-    shown.push(line);
-    used += line.length + 1;
+  let used = size(head) + size(tail);
+  let shownEntries = 0;
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!;
+    const isLast = i === items.length - 1;
+    if (used + item.text.length + 1 + (isLast ? 0 : reserve) > limit) break;
+    shown.push(item.text);
+    used += item.text.length + 1;
+    if (!item.header) shownEntries++;
   }
-  const hidden = lines.length - shown.length;
+  const hidden = entries - shownEntries;
   if (hidden > 0) shown.push(`…и ещё ${hidden}`);
   return [...head, ...shown, ...tail].join("\n");
 }
