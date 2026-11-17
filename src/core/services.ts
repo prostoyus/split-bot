@@ -165,14 +165,13 @@ export interface UserEventDebts {
   owedBy: { fromUser: UserRef; amount: number }[];
 }
 
-export interface DebtReminder {
-  eventId: number;
-  eventTitle: string;
-  currency: string;
+export type UserReminder = {
   userId: number;
-  /** How much the user owes (positive). */
-  amount: number;
-}
+  /** Only currencies with total < 0, amount = |total|; largest first. */
+  owe: { currency: string; amount: number }[];
+  /** Events with effective net < 0 in those currencies, amount = |net|, largest first. */
+  events: { eventId: number; title: string; currency: string; amount: number }[];
+};
 
 // ---------------------------------------------------------------- helpers
 
@@ -878,80 +877,99 @@ export async function getUserDebtsSummary(deps: Deps, userId: number): Promise<U
 }
 
 /**
- * Debtors (net < 0) not reminded for that event within `remindEveryDays` days and without a
- * pending settlement there. Never / least recently reminded first (then event id, user id), so
- * rows that keep failing cannot starve others; at most `limit` rows (one query).
+ * Weekly reminders by totals across events (see SPEC "Weekly reminders (by totals)").
+ *
+ * Effective net per (user, event) counts PENDING settlements as done. Per user and currency the
+ * effective nets are summed; a user is due when some currency total < 0 and the last reminder is
+ * older than `remindEveryDays` (or there was none). Due users are ordered never / least recently
+ * reminded first, then by user id, and at most `limit` are returned. One SQL query; D1 aggregates.
  */
-export async function findDebtorsToRemind(
+export async function findUsersToRemind(
   deps: Deps,
   now: Date | number,
   remindEveryDays: number,
-  limit = 50,
-): Promise<DebtReminder[]> {
+  limit = 40,
+): Promise<UserReminder[]> {
   const nowMs = typeof now === "number" ? now : now.getTime();
   const threshold = nowMs - remindEveryDays * 24 * 60 * 60 * 1000;
   const res = await deps.db
     .prepare(
-      `WITH nets AS (
-         SELECT event_id, user_id, SUM(v) AS net FROM (
-           SELECT event_id, payer_id AS user_id, amount AS v FROM expenses
-           UNION ALL SELECT x.event_id, s.user_id, -s.amount FROM expense_shares s
-                     JOIN expenses x ON x.id = s.expense_id
-           UNION ALL SELECT event_id, from_id, amount FROM settlements WHERE status = 'confirmed'
-           UNION ALL SELECT event_id, to_id, -amount FROM settlements WHERE status = 'confirmed'
-         ) GROUP BY event_id, user_id HAVING SUM(v) < 0
+      `WITH eff AS MATERIALIZED (
+         SELECT f.user_id, f.event_id, e.title, e.currency, f.net
+         FROM (
+           SELECT event_id, user_id, SUM(v) AS net FROM (
+             SELECT event_id, payer_id AS user_id, amount AS v FROM expenses
+             UNION ALL SELECT x.event_id, s.user_id, -s.amount FROM expense_shares s
+                       JOIN expenses x ON x.id = s.expense_id
+             UNION ALL SELECT event_id, from_id, amount FROM settlements
+                       WHERE status IN ('confirmed', 'pending')
+             UNION ALL SELECT event_id, to_id, -amount FROM settlements
+                       WHERE status IN ('confirmed', 'pending')
+           ) GROUP BY event_id, user_id HAVING SUM(v) <> 0
+         ) f
+         JOIN events e ON e.id = f.event_id
+         JOIN members m ON m.event_id = f.event_id AND m.user_id = f.user_id
+       ),
+       neg AS MATERIALIZED (
+         SELECT user_id, currency, SUM(net) AS total FROM eff
+         GROUP BY user_id, currency HAVING SUM(net) < 0
+       ),
+       due AS MATERIALIZED (
+         SELECT n.user_id, COALESCE(r.last_sent_at, 0) AS last_sent
+         FROM (SELECT DISTINCT user_id FROM neg) n
+         LEFT JOIN user_reminders r ON r.user_id = n.user_id
+         WHERE r.last_sent_at IS NULL OR r.last_sent_at <= ?1
+         ORDER BY last_sent, n.user_id
+         LIMIT ?2
        )
-       SELECT n.event_id, e.title, e.currency, n.user_id, -n.net AS amount
-       FROM nets n
-       JOIN events e ON e.id = n.event_id
-       JOIN members m ON m.event_id = n.event_id AND m.user_id = n.user_id
-       LEFT JOIN reminders r ON r.event_id = n.event_id AND r.user_id = n.user_id
-       WHERE (r.last_sent_at IS NULL OR r.last_sent_at <= ?1)
-         AND NOT EXISTS (SELECT 1 FROM settlements p WHERE p.event_id = n.event_id
-                         AND p.from_id = n.user_id AND p.status = 'pending')
-       ORDER BY COALESCE(r.last_sent_at, 0), n.event_id, n.user_id
-       LIMIT ?2`,
+       SELECT d.user_id, d.last_sent, n.currency, n.total, f.event_id, f.title, f.net
+       FROM due d
+       JOIN neg n ON n.user_id = d.user_id
+       JOIN eff f ON f.user_id = d.user_id AND f.currency = n.currency AND f.net < 0
+       ORDER BY d.last_sent, d.user_id`,
     )
     .bind(threshold, Math.max(0, Math.floor(limit)))
-    .all<{ event_id: number; title: string; currency: string; user_id: number; amount: number }>();
-  return res.results.map((r) => ({
-    eventId: r.event_id,
-    eventTitle: r.title,
-    currency: r.currency,
-    userId: r.user_id,
-    amount: Number(r.amount),
+    .all<{
+      user_id: number;
+      last_sent: number;
+      currency: string;
+      total: number;
+      event_id: number;
+      title: string;
+      net: number;
+    }>();
+
+  // Rows are grouped by user in due order; build one UserReminder per user.
+  const byUser = new Map<number, { owe: Map<string, number>; events: UserReminder["events"] }>();
+  for (const r of res.results) {
+    let u = byUser.get(r.user_id);
+    if (!u) byUser.set(r.user_id, (u = { owe: new Map(), events: [] }));
+    u.owe.set(r.currency, -Number(r.total));
+    u.events.push({ eventId: r.event_id, title: r.title, currency: r.currency, amount: -Number(r.net) });
+  }
+  return [...byUser].map(([userId, u]) => ({
+    userId,
+    owe: [...u.owe]
+      .map(([currency, amount]) => ({ currency, amount }))
+      .sort((a, b) => b.amount - a.amount || a.currency.localeCompare(b.currency)),
+    events: u.events.sort((a, b) => b.amount - a.amount || a.eventId - b.eventId),
   }));
 }
 
-const MARK_REMINDED_SQL = `INSERT INTO reminders (event_id, user_id, last_sent_at) VALUES (?1, ?2, ?3)
-  ON CONFLICT (event_id, user_id) DO UPDATE SET last_sent_at = excluded.last_sent_at`;
-
-/** Remember that a reminder was sent (404 if the event or user does not exist). */
-export async function markReminded(
+/** Upsert user_reminders.last_sent_at for all `userIds` in one batch (unknown users are skipped). */
+export async function markUsersReminded(
   deps: Deps,
-  eventId: number,
-  userId: number,
+  userIds: readonly number[],
   now: Date | number = Date.now(),
 ): Promise<void> {
+  const ids = [...new Set(userIds)];
+  if (ids.length === 0) return;
   const nowMs = typeof now === "number" ? now : now.getTime();
-  try {
-    await deps.db.prepare(MARK_REMINDED_SQL).bind(eventId, userId, nowMs).run();
-  } catch (err) {
-    if (isForeignKeyViolation(err)) throw new NotFoundError("Событие или пользователь не найдены");
-    throw err;
-  }
-}
-
-/** Batch version of markReminded: one D1 round trip for the whole cron run. */
-export async function markRemindedMany(
-  deps: Deps,
-  items: readonly { eventId: number; userId: number }[],
-  now: Date | number = Date.now(),
-): Promise<void> {
-  if (items.length === 0) return;
-  const nowMs = typeof now === "number" ? now : now.getTime();
-  const stmt = deps.db.prepare(MARK_REMINDED_SQL);
-  await deps.db.batch(items.map((i) => stmt.bind(i.eventId, i.userId, nowMs)));
+  const stmt = deps.db.prepare(
+    `INSERT INTO user_reminders (user_id, last_sent_at) SELECT id, ?2 FROM users WHERE id = ?1
+     ON CONFLICT (user_id) DO UPDATE SET last_sent_at = excluded.last_sent_at`,
+  );
+  await deps.db.batch(ids.map((id) => stmt.bind(id, nowMs)));
 }
 
 export { formatMoney } from "./money";

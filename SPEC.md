@@ -43,7 +43,7 @@ Telegram  ── webhook POST ──────────────►   �
 ```
 WEBAPP_URL = "https://prostoyus.github.io/split-bot/webapp/"
 ALLOWED_ORIGINS = "https://prostoyus.github.io"   # comma separated; http://localhost:* and http://127.0.0.1:* always allowed
-REMIND_EVERY_DAYS = "3"
+REMIND_EVERY_DAYS = "7"
 ```
 
 Secrets (never committed; `wrangler secret put` in prod, `.dev.vars` locally — gitignored):
@@ -186,9 +186,9 @@ Required exports (names fixed; signatures may add optional params):
 `listUserEvents`, `addExpense`, `listExpenses`, `deleteExpense`, `getEventBalances`, `createSettlement`,
 `listSettlements`, `confirmSettlement`, `rejectSettlement`,
 `getUserDebtsSummary(deps, userId) -> [{ eventId, title, currency, net, owes:[{toUser, amount}], owedBy:[{fromUser, amount}] }]`,
-`findDebtorsToRemind(deps, now, remindEveryDays, limit) -> [{ eventId, eventTitle, currency, userId, amount }]`
-(skips debtors with a pending settlement in that event; ordered never-reminded / least-recently-reminded first,
-then event id, user id, so persistently failing rows cannot starve others), `markReminded(deps, eventId, userId, now)`.
+`findUsersToRemind(deps, now, remindEveryDays, limit = 40) -> UserReminder[]` and
+`markUsersReminded(deps, userIds, now)` — see "Weekly reminders (by totals)". The old per-event
+`findDebtorsToRemind` / `markReminded` / `markRemindedMany` are removed (table `reminders` stays, unused).
 
 ## Notifications (to everyone except the actor), with an "Открыть событие" web_app button
 
@@ -211,9 +211,32 @@ then event id, user id, so persistently failing rows cannot starve others), `mar
 - Mini App URL: `WEBAPP_URL` + `?event=<id>` when relevant (no `api` param in v2 — the webapp knows its API base).
 - `/admin/setup` sets: webhook (`secret_token`, `allowed_updates: ["message"]`, drop pending updates),
   commands (/start, /debts, /help), chat menu button "Открыть" → WEBAPP_URL.
-- Reminders (cron hourly): for each debtor (net<0) in each event with no reminder in `REMIND_EVERY_DAYS` days and no
-  pending settlement there, send "Напоминание: вы должны X в «…»" + button, then `markReminded`. Process at most a
-  safe batch per run (stay under the subrequest limit); the rest go next hour. Unreachable users are marked too.
+- Reminders: see "Weekly reminders (by totals)".
+
+## Weekly reminders (by totals)
+
+- `REMIND_EVERY_DAYS = "7"`. Cron stays hourly; each run handles users who are due.
+- Table `user_reminders`: `user_id` (PK, FK users), `last_sent_at` (INTEGER ms). Migration `0003_user_reminders.sql`.
+- Effective net per (user, event) = net + sum(user's PENDING settlements sent in that event)
+  − sum(user's PENDING settlements received in that event) (pending returns count as already done).
+- Per user and currency: total = sum of effective nets of the user's events in that currency.
+  A user is **due** if at least one currency total < 0 AND (`user_reminders` has no row OR
+  `last_sent_at` ≤ now − REMIND_EVERY_DAYS days).
+- `type UserReminder = { userId: number; owe: { currency: string; amount: number }[];  // only currencies with total < 0, amount = |total|
+  events: { eventId: number; title: string; currency: string; amount: number }[] }` // events with effective net < 0 in those currencies, amount = |net|, largest first
+- Order due users by COALESCE(last_sent_at, 0), then user id; at most `limit` (40) per run (free-plan subrequests).
+- Text (HTML, escaped):
+  ```
+  🔔 <b>Напоминание о долгах</b>
+  Всего вы должны: 3 000 ₽ и 20 $
+  Из них:
+  «Сочи» — 2 000 ₽
+  «Квартира» — 1 000 ₽
+  ```
+  then "Подробности и кнопка «Я вернул» — в приложении." Keep under 4096 chars (truncate the event list with
+  "…и ещё N"). Button: web_app "Открыть" → WEBAPP_URL (no event param).
+- After the run: one `markUsersReminded` batch for sent + permanently unreachable users (any Telegram 4xx except 429);
+  429 stops the run without marking the rest; network / 5xx errors are not marked.
 
 ## Totals across events ("Итого")
 

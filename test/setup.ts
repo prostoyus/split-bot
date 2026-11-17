@@ -8,7 +8,7 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 // Every test starts from an empty database.
 beforeEach(async () => {
   await env.DB.batch(
-    ["reminders", "settlements", "expense_shares", "expenses", "members", "events", "users"].map((t) =>
+    ["user_reminders", "reminders", "settlements", "expense_shares", "expenses", "members", "events", "users"].map((t) =>
       env.DB.prepare(`DELETE FROM ${t}`),
     ),
   );

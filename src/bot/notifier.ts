@@ -16,6 +16,14 @@ export type TelegramSender = (userId: number, html: string, extra?: NotifyExtra)
 
 const UNREACHABLE_400 = /chat not found|user not found|peer_id_invalid|bot can't initiate|user is deactivated/i;
 
+/** 403 (blocked / never started) or 400 "chat not found"-like: the user cannot be reached. */
+export function isUnreachable(err: unknown): boolean {
+  return (
+    err instanceof GrammyError &&
+    (err.error_code === 403 || (err.error_code === 400 && UNREACHABLE_400.test(err.description)))
+  );
+}
+
 /** Short error description for logs; never contains the bot token. */
 export function describeError(err: unknown, token?: string): string {
   let text: string;
@@ -38,7 +46,7 @@ export function createTelegramSender(api: Api, webappUrl: string): TelegramSende
       return "sent";
     } catch (err) {
       if (err instanceof GrammyError) {
-        if (err.error_code === 403 || (err.error_code === 400 && UNREACHABLE_400.test(err.description))) {
+        if (isUnreachable(err)) {
           console.info("telegram user unreachable", { userId, code: err.error_code });
           return "unreachable";
         }

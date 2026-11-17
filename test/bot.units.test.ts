@@ -11,7 +11,6 @@ import {
   formatTotals,
   joinedText,
   parseJoinPayload,
-  reminderText,
   splitMessage,
 } from "../src/bot/texts";
 import { createNotifier } from "../src/core/notify";
@@ -78,7 +77,7 @@ describe("texts", () => {
     expect(splitMessage(big).every((c) => c.length <= 4096)).toBe(true);
   });
 
-  it("join payload, joined text, reminder text", () => {
+  it("join payload, joined text", () => {
     expect(parseJoinPayload("join_abc")).toBe("join_abc");
     expect(parseJoinPayload(" join_abc ")).toBe("join_abc");
     expect(parseJoinPayload("hello")).toBeNull();
@@ -86,9 +85,6 @@ describe("texts", () => {
     expect(parseJoinPayload(undefined)).toBeNull();
     expect(joinedText("A&B", true)).toBe("Вы в событии «A&amp;B»");
     expect(joinedText("A&B", false)).toBe("Вы уже в событии «A&amp;B»");
-    expect(reminderText({ eventTitle: "A&B", currency: "RUB", amount: 50000 })).toBe(
-      "Напоминание: вы должны 500 ₽ в «A&amp;B»",
-    );
   });
 });
 

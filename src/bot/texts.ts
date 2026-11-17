@@ -2,7 +2,7 @@
 
 import { CURRENCIES } from "../core/money";
 import { escapeHtml } from "../core/notify";
-import { formatMoney, type DebtReminder, type UserEventDebts } from "../core/services";
+import { formatMoney, type UserEventDebts, type UserReminder } from "../core/services";
 
 export const MAX_MESSAGE_LEN = 4096;
 export const JOIN_PREFIX = "join_";
@@ -54,8 +54,38 @@ export function joinedText(title: string, joinedNow: boolean): string {
   return joinedNow ? `Вы в событии «${t}»` : `Вы уже в событии «${t}»`;
 }
 
-export function reminderText(r: Pick<DebtReminder, "amount" | "currency" | "eventTitle">): string {
-  return `Напоминание: вы должны ${formatMoney(r.amount, r.currency)} в «${escapeHtml(r.eventTitle)}»`;
+export const REMINDER_TITLE = "🔔 <b>Напоминание о долгах</b>";
+export const REMINDER_FOOTER = "Подробности и кнопка «Я вернул» — в приложении.";
+
+/**
+ * Weekly reminder by totals (SPEC "Weekly reminders (by totals)"), one message per user.
+ * The event list is truncated with "…и ещё N" so the message stays within `limit` characters.
+ */
+export function formatUserReminder(r: Pick<UserReminder, "owe" | "events">, limit: number = MAX_MESSAGE_LEN): string {
+  const total = r.owe.map((o) => formatMoney(o.amount, o.currency)).join(" и ");
+  const head = [REMINDER_TITLE, `Всего вы должны: ${total}`];
+  const tail = ["", REMINDER_FOOTER];
+  const lines = r.events.map((e) => `«${escapeHtml(e.title)}» — ${formatMoney(e.amount, e.currency)}`);
+  if (lines.length === 0) return [...head, ...tail].join("\n");
+
+  head.push("Из них:");
+  // Every part is followed by "\n" except the last one, so this over-counts by one: safe.
+  const size = (parts: string[]) => parts.reduce((n, p) => n + p.length + 1, 0);
+  const fixed = size(head) + size(tail);
+  // Room for the "…и ещё N" line (N can never exceed the number of events).
+  const reserve = `…и ещё ${lines.length}`.length + 1;
+  const shown: string[] = [];
+  let used = fixed;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    const isLast = i === lines.length - 1;
+    if (used + line.length + 1 + (isLast ? 0 : reserve) > limit) break;
+    shown.push(line);
+    used += line.length + 1;
+  }
+  const hidden = lines.length - shown.length;
+  if (hidden > 0) shown.push(`…и ещё ${hidden}`);
+  return [...head, ...shown, ...tail].join("\n");
 }
 
 /** Return the trimmed payload if /start args look like `join_<code>`, else null. */

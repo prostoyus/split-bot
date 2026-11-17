@@ -440,7 +440,7 @@ describe("settlements", () => {
 });
 
 describe("bot helpers", () => {
-  it("debts summary and reminders", async () => {
+  it("debts summary", async () => {
     const { deps } = makeDeps();
     const event = await eventWithThree(deps);
     await s.addExpense(deps, event.id, A, equal(3000, A, [A, B, C], "Билеты"));
@@ -456,38 +456,6 @@ describe("bot helpers", () => {
     ]);
     expect(alice.owedBy[0]!.fromUser.name).toBe("Боб");
 
-    const now = Date.now();
-    const day = 24 * 3600 * 1000;
-    const due = await s.findDebtorsToRemind(deps, now, 3, 50);
-    expect(due).toEqual([
-      { eventId: event.id, eventTitle: "Поездка", currency: "RUB", userId: B, amount: 1000 },
-      { eventId: event.id, eventTitle: "Поездка", currency: "RUB", userId: C, amount: 1000 },
-    ]);
-    expect(await s.findDebtorsToRemind(deps, now, 3, 1)).toHaveLength(1);
-
-    await s.markReminded(deps, event.id, B, now);
-    expect((await s.findDebtorsToRemind(deps, now + day, 3)).map((r) => r.userId)).toEqual([C]);
-    // Never-reminded debtors come first, then the least recently reminded.
-    expect((await s.findDebtorsToRemind(deps, new Date(now + 3 * day + 60_000), 3)).map((r) => r.userId)).toEqual([
-      C,
-      B,
-    ]);
-    expect((await s.findDebtorsToRemind(deps, now + 3 * day + 60_000, 3, 1)).map((r) => r.userId)).toEqual([C]);
-
-    // Carol reported a payback that is still pending: she is not reminded.
-    const st = await s.createSettlement(deps, event.id, C, A, 500);
-    expect((await s.findDebtorsToRemind(deps, now + 4 * day, 3)).map((r) => r.userId)).toEqual([B]);
-    await s.rejectSettlement(deps, st.id, A);
-    expect((await s.findDebtorsToRemind(deps, now + 4 * day, 3)).map((r) => r.userId)).toEqual([C, B]);
-
-    await s.markRemindedMany(deps, [{ eventId: event.id, userId: B }, { eventId: event.id, userId: C }], now + 4 * day);
-    expect(await s.findDebtorsToRemind(deps, now + 5 * day, 3)).toEqual([]);
-    // Least recently reminded first, regardless of user id.
-    await s.markReminded(deps, event.id, B, now + 10 * day);
-    await s.markReminded(deps, event.id, C, now + 9 * day);
-    expect((await s.findDebtorsToRemind(deps, now + 20 * day, 3)).map((r) => r.userId)).toEqual([C, B]);
-    expect((await s.findDebtorsToRemind(deps, now + 20 * day, 3, 1)).map((r) => r.userId)).toEqual([C]);
-    await expectError(s.markReminded(deps, 999999, B, now), NotFoundError);
 
     const events = await s.listUserEvents(deps, B);
     expect(events).toEqual([{ id: event.id, title: "Поездка", currency: "RUB", membersCount: 3, myNet: -1000 }]);
@@ -533,5 +501,136 @@ describe("bot helpers", () => {
     const first = await s.createEvent(deps, A, "Первое");
     const second = await s.createEvent(deps, A, "Второе", "EUR");
     expect((await s.listUserEvents(deps, A)).map((e) => e.id)).toEqual([second.event.id, first.event.id]);
+  });
+});
+
+describe("weekly reminders by totals", () => {
+  const DAY = 24 * 3600 * 1000;
+
+  /** Event owned by members[0]; the others join. */
+  async function ev(deps: s.Deps, title: string, currency: string, members: number[]) {
+    const { event } = await s.createEvent(deps, members[0]!, title, currency);
+    for (const uid of members.slice(1)) await s.joinByInviteCode(deps, uid, event.inviteCode);
+    return event;
+  }
+
+  /** `payer` pays `amount` for exactly `debtor` (debtor owes payer `amount`). */
+  async function debt(deps: s.Deps, eventId: number, payer: number, debtor: number, amount: number) {
+    await s.addExpense(deps, eventId, payer, {
+      amount,
+      description: "x",
+      payerId: payer,
+      split: "exact",
+      shares: [{ userId: debtor, amount }],
+    });
+  }
+
+  const ids = (list: s.UserReminder[]) => list.map((r) => r.userId);
+
+  it("negative total in one currency: due, with totals and events largest first", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    const sochi = await ev(deps, "Сочи", "RUB", [A, B]);
+    const flat = await ev(deps, "Квартира", "RUB", [A, B]);
+    await debt(deps, flat.id, A, B, 50000);
+    await debt(deps, sochi.id, A, B, 200000);
+    const due = await s.findUsersToRemind(deps, Date.now(), 7);
+    expect(due).toEqual([
+      {
+        userId: B,
+        owe: [{ currency: "RUB", amount: 250000 }],
+        events: [
+          { eventId: sochi.id, title: "Сочи", currency: "RUB", amount: 200000 },
+          { eventId: flat.id, title: "Квартира", currency: "RUB", amount: 50000 },
+        ],
+      },
+    ]);
+  });
+
+  it("being owed in another event of the same currency offsets the debt", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    const e1 = await ev(deps, "Е1", "RUB", [A, B]);
+    const e2 = await ev(deps, "Е2", "RUB", [B, C]);
+    await debt(deps, e1.id, A, B, 1000);
+    await debt(deps, e2.id, B, C, 2000);
+    // B: -1000 + 2000 > 0 → not due; C owes 2000 → due.
+    expect(ids(await s.findUsersToRemind(deps, Date.now(), 7))).toEqual([C]);
+  });
+
+  it("mixed currencies: only negative currencies (and their negative events) are listed", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    const rub1 = await ev(deps, "Рубли-1", "RUB", [A, B]);
+    const rub2 = await ev(deps, "Рубли-2", "RUB", [B, C]);
+    const usd = await ev(deps, "Доллары", "USD", [B, C]);
+    const eur = await ev(deps, "Евро", "EUR", [A, B]);
+    await debt(deps, rub1.id, A, B, 1000); // B -1000 RUB
+    await debt(deps, rub2.id, B, C, 200); // B +200 RUB
+    await debt(deps, usd.id, B, C, 2000); // B +2000 USD
+    await debt(deps, eur.id, A, B, 300); // B -300 EUR
+    const due = (await s.findUsersToRemind(deps, Date.now(), 7)).find((r) => r.userId === B)!;
+    expect(due.owe).toEqual([
+      { currency: "RUB", amount: 800 },
+      { currency: "EUR", amount: 300 },
+    ]);
+    expect(due.events).toEqual([
+      { eventId: rub1.id, title: "Рубли-1", currency: "RUB", amount: 1000 },
+      { eventId: eur.id, title: "Евро", currency: "EUR", amount: 300 },
+    ]);
+  });
+
+  it("pending settlements sent count as paid", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    const e = await ev(deps, "Е", "RUB", [A, B]);
+    await debt(deps, e.id, A, B, 1000);
+    const now = Date.now();
+    const st = await s.createSettlement(deps, e.id, B, A, 1000);
+    expect(await s.findUsersToRemind(deps, now, 7)).toEqual([]); // fully "paid" → not due
+    await s.rejectSettlement(deps, st.id, A);
+    const partial = await s.createSettlement(deps, e.id, B, A, 400);
+    expect((await s.findUsersToRemind(deps, now, 7))[0]!.owe).toEqual([{ currency: "RUB", amount: 600 }]);
+    await s.confirmSettlement(deps, partial.id, A);
+    expect((await s.findUsersToRemind(deps, now, 7))[0]!.owe).toEqual([{ currency: "RUB", amount: 600 }]);
+  });
+
+  it("throttles to once per 7 days", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    const e = await ev(deps, "Е", "RUB", [A, B]);
+    await debt(deps, e.id, A, B, 1000);
+    const t0 = Date.now();
+    await s.markUsersReminded(deps, [B], t0);
+    expect(await s.findUsersToRemind(deps, t0 + 6 * DAY + 23 * 3600 * 1000, 7)).toEqual([]);
+    expect(ids(await s.findUsersToRemind(deps, new Date(t0 + 7 * DAY), 7))).toEqual([B]);
+  });
+
+  it("orders never-reminded first, then least recently reminded; applies the limit", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    const e = await ev(deps, "Е", "RUB", [A, B, C, M]);
+    for (const u of [B, C, M]) await debt(deps, e.id, A, u, 1000);
+    const t0 = Date.now();
+    expect(ids(await s.findUsersToRemind(deps, t0, 7))).toEqual([B, C, M]);
+    await s.markUsersReminded(deps, [B], t0 + DAY);
+    await s.markUsersReminded(deps, [C], t0);
+    const later = t0 + 30 * DAY;
+    expect(ids(await s.findUsersToRemind(deps, later, 7))).toEqual([M, C, B]);
+    expect(ids(await s.findUsersToRemind(deps, later, 7, 2))).toEqual([M, C]);
+    expect(await s.findUsersToRemind(deps, later, 7, 0)).toEqual([]);
+  });
+
+  it("markUsersReminded upserts in one batch and skips unknown users", async () => {
+    const { deps } = makeDeps();
+    await seedUsers(deps);
+    await s.markUsersReminded(deps, []);
+    await s.markUsersReminded(deps, [B, C, B, 424242], 1000);
+    await s.markUsersReminded(deps, [B], 2000);
+    const rowsNow = await env.DB.prepare("SELECT user_id, last_sent_at FROM user_reminders ORDER BY user_id").all();
+    expect(rowsNow.results).toEqual([
+      { user_id: B, last_sent_at: 2000 },
+      { user_id: C, last_sent_at: 1000 },
+    ]);
   });
 });
